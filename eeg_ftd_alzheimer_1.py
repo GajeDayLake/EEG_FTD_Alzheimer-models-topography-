@@ -52,20 +52,20 @@ from scipy.signal import stft, welch
 
 
 
-# To identify the base directory address 
+# 2.1) Functions to identify the base directory address 
 BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
 WORKSPACE_DIR = BASE_DIR.parent if BASE_DIR.name == "EEG_FTD_Alzheimer" else BASE_DIR
 
 
 
-# Directories
+# 2.2) Directories
 DATASET_DIR = WORKSPACE_DIR / "ds004504"
 DERIVATIVES_DIR = DATASET_DIR / "derivatives"
 PARTICIPANTS_FILE = DATASET_DIR / "participants.tsv"
 
 
 
-# Dictionary to match the data with labels
+# 2.3) Dictionary to match the data with labels
 group_map = {
     "A": "Alzheimer Disease Group",
     "F": "Frontotemporal Dementia Group",
@@ -73,30 +73,40 @@ group_map = {
 }
 
 
-
-# Collecting participant (subject) information to match them with labels
-participants_df = pd.read_csv(PARTICIPANTS_FILE, sep="\t")
-participants_df = participants_df.rename(columns={"Group": "group_code"})
-participants_df["group_name"] = participants_df["group_code"].map(group_map)
-
+"""
+Groups were written as A,F,C corresponding to the class names. 
+These names will be gathered and made readable in the dataframe.
+"""
 
 
-# Loop to gather the data
+
+participants_df = pd.read_csv(PARTICIPANTS_FILE, sep="\t")                   # collecting participant (subject) information
+participants_df = participants_df.rename(columns={"Group": "group_code"})    # column name change
+participants_df["group_name"] = participants_df["group_code"].map(group_map) # new column to match them with labels
+
+
+
+
+# 2.4) Loop to gather the data
 
 records = []
 
 for set_path in sorted(DERIVATIVES_DIR.glob("sub-*/eeg/*.set")):            # look into this directory, by this structure 
     
-    participant_id = set_path.parent.parent.name 
+    participant_id = set_path.parent.parent.name                            # get sub-0xx info
     
-    raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose="ERROR")   # read by using MNE library
+    raw = mne.io.read_raw_eeglab(set_path, preload=True, verbose="ERROR")   # read .set file by using MNE library. 
+                                                                            # EEGLAB object, it includes relevant methods and information.
 
-    signals_df = pd.DataFrame(raw.get_data().T, columns=raw.ch_names)       # gather 19 channel signals
+
+    signals_df = pd.DataFrame(raw.get_data().T, columns=raw.ch_names)       # gather 19 channel signals (with column names) into a dataframe 
     
-    signals_df.insert(0, "time_sec", raw.times)                             # add time information, we'll use it later
+    signals_df.insert(0, "time_sec", raw.times)                             # add time information, will be used to divide the signals
 
 
-    records.append(
+    # to collect all types of information into a list
+    
+    records.append(                                                         
         {
             "participant_id": participant_id,
             "file_path": str(set_path),
@@ -111,57 +121,56 @@ for set_path in sorted(DERIVATIVES_DIR.glob("sub-*/eeg/*.set")):            # lo
 
 
 
-# Generate new dataframe
-eeg_df = pd.DataFrame(records)
-
-eeg_df = eeg_df.merge(participants_df, on="participant_id", how="left")  # list by ID
-
-eeg_summary = eeg_df[
-    [
-        "participant_id",
-        "group_code",
-        "group_name",
-        "Gender",
-        "Age",
-        "MMSE",
-        "sfreq",
-        "n_channels",
-        "n_times",
-        "duration_sec",
-    ]
-].copy()
+# 2.5) Generate the new dataframe to gather all the information and data together.
 
 
-print(eeg_summary.head())
-print()
-print(eeg_summary["group_name"].value_counts())
+eeg_df = pd.DataFrame(records)                                           # convert this ordered list into dataframe
+
+eeg_df = eeg_df.merge(participants_df, on="participant_id", how="left")  # order this dataframe by ID
+
+
+del records # free 2.73 GB space from the env
+
 
 
 #%% 3) EDA: Basic plots
 
 
+# Selection of the subject
 participant_id = "sub-001"
 channel_name = "F4"
 
-subject_row = eeg_df.loc[eeg_df["participant_id"] == participant_id].iloc[0]
-subject_signals = subject_row["signals_df"]
+
+# 3.1) Select the entire row of eeg_df for selected subject
+
+subject_row = eeg_df.loc[eeg_df["participant_id"] == participant_id].iloc[0]  
+ 
+
+# 3.2) Extract the full signal for that subject, column names are the channels
+subject_signals = subject_row["signals_df"]         
 time_sec = subject_signals["time_sec"].to_numpy()
 
-channel_columns = [column for column in subject_signals.columns if column != "time_sec"]
+
+# 3.3) Get the column names
+channels = subject_row["channel_names"]
+
 
 print(
     f"{participant_id} | {subject_row['group_name']} | "
-    f"{subject_row['duration_sec']:.2f} sec | {subject_row['sfreq']} Hz"
+    f"{subject_row['duration_sec']:.2f} second duration | {subject_row['sfreq']} Hz | "
+    f"{subject_row['Age']} age | {subject_row['Gender']} gender | {subject_row['MMSE']} MMSE score "
 )
 
 
-#%% 3.1) Plot all channels of one participant
 
-fig, axes = plt.subplots(len(channel_columns), 1, figsize=(14, 2 * len(channel_columns)), sharex=True)
+# 3.4) Plot all channels of one participant
 
-for ax, channel in zip(axes, channel_columns):
-    ax.plot(time_sec, subject_signals[channel].to_numpy(), linewidth=0.7)
+fig, axes = plt.subplots(19, 1, figsize=(76,38), sharex=True)                # generate subplots
+
+for ax, channel in zip(axes, channels):                                      # select by channel names
+    ax.plot(time_sec, subject_signals[channel].to_numpy(), linewidth=0.6)    # extract signal arrays
     ax.set_ylabel(channel)
+    ax.set_ylim(-0.00015, 0.00015)
 
 axes[-1].set_xlabel("Time (s)")
 fig.suptitle(f"All EEG channels | {participant_id} | {subject_row['group_name']}", y=1.0)
@@ -169,12 +178,15 @@ plt.tight_layout()
 plt.show()
 
 
-#%% 3.2) Basic plots for one channel
+#%% 4) Frequency analyses for one channel
 
 signal = subject_signals[channel_name].to_numpy()
-fs = float(subject_row["sfreq"])
+fs = 500
 
-plt.figure(figsize=(14, 4))
+
+# 4.1) Time domain
+
+plt.figure(figsize=(57, 10))
 plt.plot(time_sec, signal, linewidth=0.8)
 plt.title(f"Time series | {participant_id} | {channel_name}")
 plt.xlabel("Time (s)")
@@ -183,15 +195,20 @@ plt.tight_layout()
 plt.show()
 
 
+
+# 4.2) Frequency domain: FFT
+
 fft_values = np.abs(fft(signal))
-frequencies = fftfreq(len(signal), d=1 / fs)
-positive_mask = frequencies >= 0
+frequencies = fftfreq(len(signal), d=1 / fs)   # linear x-axis for frequencies
+positive_mask = frequencies >= 0               # one-sided
 
 frequencies = frequencies[positive_mask]
 fft_values = fft_values[positive_mask]
 power_db = 10 * np.log10(fft_values**2 + 1e-12)
 
-plt.figure(figsize=(12, 4))
+
+# Linear plot with magnitudes
+plt.figure(figsize=(20, 10))
 plt.plot(frequencies, fft_values)
 plt.title(f"FFT magnitude | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
@@ -199,7 +216,9 @@ plt.ylabel("Magnitude")
 plt.tight_layout()
 plt.show()
 
-plt.figure(figsize=(12, 4))
+
+# Linear plot with (logarithmic) power
+plt.figure(figsize=(20, 10))
 plt.plot(frequencies, power_db)
 plt.title(f"Log power spectrum | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
@@ -208,12 +227,14 @@ plt.tight_layout()
 plt.show()
 
 
-nperseg = min(2048, len(signal))
-noverlap = nperseg // 2
+#%% 4.2) Frequency domain: Periodogram
+    
+nperseg = 4096
+noverlap = nperseg // 4
 
 freq_psd, psd = welch(signal, fs=fs, nperseg=nperseg, noverlap=noverlap, window="hann")
 
-plt.figure(figsize=(12, 4))
+plt.figure(figsize=(15, 5))
 plt.plot(freq_psd, psd)
 plt.title(f"Periodogram (Welch PSD) | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
@@ -222,9 +243,11 @@ plt.tight_layout()
 plt.show()
 
 
+#%% 4.3) Time-frequency analysis: Spectrogram
+
 freq_stft, time_stft, zxx = stft(signal, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
 
-plt.figure(figsize=(12, 5))
+plt.figure(figsize=(20, 15))
 plt.pcolormesh(time_stft, freq_stft, np.abs(zxx), shading="gouraud")
 plt.title(f"Spectrogram | {participant_id} | {channel_name}")
 plt.xlabel("Time (s)")
@@ -234,15 +257,17 @@ plt.tight_layout()
 plt.show()
 
 
-scales = np.geomspace(1, 128, 96)
-coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor1.5-1.0", sampling_period=1 / fs)
+#%% 4.4) Time-frequency analysis: Scalogram
+
+scales = np.linspace(8, 500, 96)
+coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor2.0-1.0", sampling_period=1 / fs)
 log_coefficients = np.log10(np.abs(coefficients) + 1)
 
 sort_index = np.argsort(cwt_frequencies)
 cwt_frequencies = cwt_frequencies[sort_index]
 log_coefficients = log_coefficients[sort_index]
 
-plt.figure(figsize=(12, 5))
+plt.figure(figsize=(20, 15))
 plt.imshow(
     log_coefficients,
     extent=[time_sec[0], time_sec[-1], cwt_frequencies[0], cwt_frequencies[-1]],
