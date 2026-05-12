@@ -213,6 +213,7 @@ plt.plot(frequencies, fft_values)
 plt.title(f"FFT magnitude | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Magnitude")
+plt.xlim(-1,60)              # focus on first 60 Hz part, others are filtered
 plt.tight_layout()
 plt.show()
 
@@ -223,6 +224,7 @@ plt.plot(frequencies, power_db)
 plt.title(f"Log power spectrum | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Power (dB)")
+plt.xlim(-1,60) 
 plt.tight_layout()
 plt.show()
 
@@ -239,6 +241,7 @@ plt.plot(freq_psd, psd)
 plt.title(f"Periodogram (Welch PSD) | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Power")
+plt.xlim(-1,60)  
 plt.tight_layout()
 plt.show()
 
@@ -251,6 +254,7 @@ plt.figure(figsize=(20, 15))
 plt.pcolormesh(time_stft, freq_stft, np.abs(zxx), shading="gouraud")
 plt.title(f"Spectrogram | {participant_id} | {channel_name}")
 plt.xlabel("Time (s)")
+plt.ylim(0,60) 
 plt.ylabel("Frequency (Hz)")
 plt.colorbar(label="Magnitude")
 plt.tight_layout()
@@ -284,4 +288,15 @@ plt.show()
 
 
 
+#%% 5) Divide signals into equal parts 
 
+
+"""
+eeg_df is a large dataframe that includes 13 columns 
+
+each signals_df has 20 columns: 1 time_sec + 19 EEG channels 
+"""
+
+subject_row.head()
+
+eeg_df.head()
