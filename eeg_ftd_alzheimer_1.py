@@ -288,15 +288,333 @@ plt.show()
 
 
 
-#%% 5) Divide signals into equal parts 
+#%% 5) Dataset preparation: Splitting and segmentation
 
 
 """
-eeg_df is a large dataframe that includes 13 columns 
+eeg_df is a large dataframe that includes 13 columns:
 
-each signals_df has 20 columns: 1 time_sec + 19 EEG channels 
+First column is "participant_id" lists 88 subjects with sub-XXX naming convention.
+
+Second column is "file_path" that includes the path of the .set file for each subject, not so important for now.
+
+Third column is "sfreq" that includes the sampling frequency of the signals, which is 500Hz for all subjects. No difference.
+
+Fourth column is "n_channels" that includes the number of channels, which is 19 for all subjects. No difference.
+
+Fifth column is "channel_names" that includes the names of the channels, which are the same for all subjects.
+
+The channel names are: ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'Fz', 'Cz', 'Pz'] Their order is same for all, no need to check them. 
+
+Next two columns are important for the division of signals: "n_times" and "duration_sec".
+
+"n_times" is the total number of time points in the signal, which varies among subjects.
+
+"duration_sec" is the total duration of the signal in seconds, which also varies among subjects. It is calculated by dividing "n_times" by "sfreq".
+
+8th column "signals_df" includes the actual EEG signals for corresponding subject, which is another dataframe. 
+
+Each "signals_df" has 20 columns: 1 "time_sec" + 19 EEG channels. "time_sec" corresponding timestamp in seconds for each time point, which is important for the division of signals.
+
+It starts with 0 and ends with the total duration of the signal in seconds, for that subject. The number of rows in "signals_df" is equal to "n_times" for that subject, which is the total number of time points in the signal.
+
+19 EEG channels follow the same channel order as "channel_names". They include our real signals. 
+
+9th column is "Gender" that includes the gender of the subjects. Not important for now.
+
+10th column is "Age" that includes the age of the subjects. Not important for now. 
+
+11th column is "group_code" that includes the group labels in A, F, C format. Their meanings are explained in the last column "group names". They represent our labels.
+
+12th column is "MMSE" that includes the Mini-Mental State Examination scores of the subjects. Not important for now.
+
+13th column is "group_name" that includes the group labels in a readable format.
+
+
+Your task is to divide the signals into equal parts, for example 1 minute (60 seconds, 60*500=30000 points) segments, and assign the corresponding labels and subject IDs to each segment.
+
+Assignment of subject IDs is crucial to prevent data leakage. 
+
+All the signals are located in the "signals_df" column, which is a dataframe for each subject.
+
+You should be minimalist. You can design a simple for loop with if-else statement to obtain these 1 minute segments, discarding the few remaining points.
+
+All of the resultant data must saved in a NumPy array, not a dataframe anymore. First column will be subject ID. Second column will be the label (A, F, C). 
+
+I will use ordinal encoding for the labels, where A=0, F=1, C=2. I can apply this in a different block of code. 
+
+We will use this NumPy array for train - val - test separation with stratified sampling. We will use subject IDs to ensure that all segments from the same subject are in the same set (train, val, or test) to prevent data leakage.
+
+Train will be 70%, validation will be 10½, and test will be 20½ of the total segments.
+
+As durations of signals vary among each subject, we have different numbers of segments attached to each subject. 
+
+For example, if a subject has 5 minutes of signal, we can obtain 5 segments of 1 minute each. If another subject has 3 minutes of signal, we can obtain 3 segments of 1 minute each. 
+
+This makes the prevention of data leakage in data splitting even harder to implement. We can try to design a minimalist function to handle this separation. 
+
+4 criteria for the separation; 
+1) Stratified sampling to maintain class balance in each set, 
+2) Subject-wise separation to prevent data leakage, 
+3) Randomization to ensure that the segments are randomly distributed across the sets.
+4) The total number of segments in each set should be approximately 70%, 10½, and 20½ of the total segments, respectively. 
+
+Only for this complex operation, you can define a minimalist custom function. 
+
+In other cases, do not apply any abstraction, just use simple for loops and if-else statements to achieve the task. 
+
+Follow the style and minimalism of the previous codes in this file. 
+
+Add concise and simple comments to explain each line. 
 """
 
-subject_row.head()
 
-eeg_df.head()
+# 5.1) Set the segment (epoch) length
+segment_sec = 60
+segment_points = int(segment_sec * 500)                         # 60 sec * 500 Hz = 30000 points
+n_channels = 19                                                 # 19 EEG channels
+
+
+
+
+# 5.2) Split the subjects first, by stratified random assignment
+
+from sklearn.model_selection import train_test_split
+from sklearn.utils import shuffle
+
+
+# Extract subject IDs and their class labels
+subject_ids = eeg_df["participant_id"].to_numpy()              # 88 subject IDs
+subject_labels = eeg_df["group_code"].to_numpy()               # 88 labels (A, F, or C)
+
+
+
+# First split: 70% train, 30% temporary (which will become val + test in the next part)
+train_subject_ids, temp_subject_ids, _, _ = train_test_split(
+    subject_ids,
+    subject_labels,
+    test_size=0.30,
+    stratify=subject_labels,             # stratify respect to labels, for maintaining class balance
+    random_state=42,
+)
+
+
+
+
+# Second split: divide 30% temp into 10% val and 20% test
+temp_labels = eeg_df.loc[eeg_df["participant_id"].isin(temp_subject_ids), "group_code"].to_numpy()
+
+val_subject_ids, test_subject_ids, _, _ = train_test_split(
+    temp_subject_ids,
+    temp_labels,
+    test_size=2 / 3,                                            # 2/3 of 30% = 20% test
+    stratify=temp_labels,
+    random_state=42,
+)
+
+
+
+# 5.3) Generate containers for segments in each split
+
+train_data_list = []                # will hold (30000, 19) segment signals
+val_data_list = []
+test_data_list = []
+
+train_segment_ids = []              # will hold subject IDs per segment
+val_segment_ids = []
+test_segment_ids = []
+
+train_segment_labels = []           # will hold labels per segment (respect to subject ID)
+val_segment_labels = []
+test_segment_labels = []
+
+
+
+# Convert IDs to sets for membership checking during loop (faster)
+
+train_subject_id_set = set(train_subject_ids)                   # {sub-042, sub-061, ...}
+val_subject_id_set = set(val_subject_ids)
+test_subject_id_set = set(test_subject_ids)
+
+
+
+
+# 5.4) Iterate all 88 subjects, segment each signal, and route to correct split
+
+
+for _, subject_row in eeg_df.iterrows():    # look for every row of this dataframe
+
+    
+    # Extract current subject's information
+    participant_id = subject_row["participant_id"]
+    group_code = subject_row["group_code"]
+    channel_names = subject_row["channel_names"]
+    signals = subject_row["signals_df"][channel_names].to_numpy()   # shape: (total_points, 19)
+    n_segments = subject_row["n_times"] // segment_points           # determination of total segment count
+
+
+    # Determine the split of this subject belongs to (train, test, or val)
+    
+    if participant_id in train_subject_id_set:
+        
+        target_data_list = train_data_list
+        target_id_list = train_segment_ids
+        target_label_list = train_segment_labels
+        
+    elif participant_id in val_subject_id_set:
+        
+        target_data_list = val_data_list
+        target_id_list = val_segment_ids
+        target_label_list = val_segment_labels
+        
+    else:
+        target_data_list = test_data_list
+        target_id_list = test_segment_ids
+        target_label_list = test_segment_labels
+
+
+    # Prepare all 60-second segments for this subject
+    
+    for segment_index in range(n_segments):  # total segment count we determined above  (9, 13 etc.)
+
+
+        # Extract 60*500 points in order
+        start = segment_index * segment_points   # index * 30000  (first index=0)
+        end = start + segment_points
+        segment = signals[start:end, :]          # extract this segment from subject's signals (all 19 channels)     
+        
+        
+        # shape of each segment: (30000, 19)
+
+
+        # Append segment and metadata to the appropriate split
+        target_data_list.append(segment)
+        target_id_list.append(participant_id)
+        target_label_list.append(group_code)
+
+
+# We have obtained all the segments/epochs in a list
+
+
+
+
+# 5.5) Convert lists to arrays (3D tensors)
+# (n_segments, 30000, 19)
+
+train_data = np.stack(train_data_list) if train_data_list else np.empty((0, segment_points, n_channels))
+val_data = np.stack(val_data_list) if val_data_list else np.empty((0, segment_points, n_channels))
+test_data = np.stack(test_data_list) if test_data_list else np.empty((0, segment_points, n_channels))
+
+
+# segment IDs to arrays 
+train_segment_ids = np.array(train_segment_ids)
+val_segment_ids = np.array(val_segment_ids)
+test_segment_ids = np.array(test_segment_ids)
+
+
+# label arrays 
+train_segment_labels = np.array(train_segment_labels)
+val_segment_labels = np.array(val_segment_labels)
+test_segment_labels = np.array(test_segment_labels)
+
+
+
+# 5.6) Final shuffle on segments in each split (prevent order bias & obtain better mixture)
+
+train_data, train_segment_ids, train_segment_labels = shuffle(
+    train_data,
+    train_segment_ids,
+    train_segment_labels,
+    random_state=42,              # reproducibility by RNG
+)
+
+val_data, val_segment_ids, val_segment_labels = shuffle(
+    val_data,
+    val_segment_ids,
+    val_segment_labels,
+    random_state=42,
+)
+
+test_data, test_segment_ids, test_segment_labels = shuffle(
+    test_data,
+    test_segment_ids,
+    test_segment_labels,
+    random_state=42,
+)
+
+
+
+print("train_data shape:", train_data.shape)
+print("val_data shape:", val_data.shape)
+print("test_data shape:", test_data.shape)
+
+
+
+# 5.7) Delete temporary variables to free memory
+
+
+del (
+    subject_ids,
+    subject_labels,
+    temp_subject_ids,
+    temp_labels,
+    train_subject_ids,
+    val_subject_ids,
+    test_subject_ids,
+    train_subject_id_set,
+    val_subject_id_set,
+    test_subject_id_set,
+    train_data_list,
+    val_data_list,
+    test_data_list,
+    eeg_df
+)
+
+ 
+
+
+#%% Optional: To check the IDs manually 
+
+
+# Any ID cannot be occured twice, to prevent data leakage & provide subject separation
+# For manual control, arrays can be saved as Excel files
+
+
+desktop = Path.home() / "Desktop"    # where you want to save
+
+
+# Convert to string for clean Excel output
+train_ids = np.asarray(train_segment_ids).astype(str)
+train_labels = np.asarray(train_segment_labels).astype(str)
+
+val_ids = np.asarray(val_segment_ids).astype(str)
+val_labels = np.asarray(val_segment_labels).astype(str)
+
+test_ids = np.asarray(test_segment_ids).astype(str)
+test_labels = np.asarray(test_segment_labels).astype(str)
+
+
+# TRAIN
+df_train = pd.DataFrame({"segment_id": train_ids, "segment_label": train_labels})
+df_train.to_excel(desktop / "train_segment_ids_and_labels.xlsx", index=False)
+
+# VAL
+df_val = pd.DataFrame({"segment_id": val_ids, "segment_label": val_labels})
+df_val.to_excel(desktop / "val_segment_ids_and_labels.xlsx", index=False)
+
+# TEST
+df_test = pd.DataFrame({"segment_id": test_ids, "segment_label": test_labels})
+df_test.to_excel(desktop / "test_segment_ids_and_labels.xlsx", index=False)
+
+
+print("Saved Excel files to:", desktop)
+
+
+
+#%% 6) Data transformation for model input 
+
+
+
+
+
+
