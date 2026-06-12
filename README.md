@@ -84,6 +84,20 @@ We write “notebook-style” `.py` scripts to conduct model experimentations ea
 
 ## 2) Codes 
 
+**eeg_ftd_alzheimer_1.py** : Loads 88-subject EEG recordings, explores the signals by time & frequency plots, segments them into 60-second epochs with stratified subject-wise splits, computes CWT scalograms per channel as feature extraction, and trains an EfficientNet-B0 classifier with early stopping and other hyperparameters. <br> <br>  
+
+```
+#%% 1) Imports
+#%% 2) Data import and labels
+#%% 3) EDA: Basic plots
+#%% 4) Frequency analyses for one channel (FFT, Periodogram, Spectrogram, Scalogram)
+#%% 5) Dataset preparation: Splitting and segmentation
+#%% 6) Data transformation for feature extraction: CWT scalograms
+#%% 7) EfficientNet-B0: Training and evaluation
+#%% 8) Final test evaluation
+#%% Optional 1: Export segment IDs/labels to Excel for manual inspection
+#%% Optional 2: Save / load scalograms from disk
+```
 <br> <br> 
 
 ---
@@ -92,7 +106,7 @@ We write “notebook-style” `.py` scripts to conduct model experimentations ea
 
 | **Feature Extraction** | **Shape of the Instances** | **Data Split** | **Model** | **Hyperparameters** | **Accuracy** | **F1** | **Precision** | **Recall** | **10-Fold CV** |
 |---|---|---|---|---|---|---|---|---|---|
-| CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | MobileNetV3 (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %85**, Train= %98 | **Test= %85**, Train= %98 | **Test= %85**, Train= %98 | **Test= %85**, Train= %95 | ... |
+| CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | MobileNetV3 (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
 | CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | ResNet18 (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
 | CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | DenseNet (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
 | DWT, Db19, 5 Level Decomposition | Feature Vectors, Features= Normalized Integral, Normalized Band Energy, Spectral Centroid, Median Frequency, Mean Frequency  | 1 min splits, %72 train, %8 val, %20 test | MLP | ... | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
