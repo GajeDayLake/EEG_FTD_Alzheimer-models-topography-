@@ -213,7 +213,7 @@ plt.plot(frequencies, fft_values)
 plt.title(f"FFT magnitude | {participant_id} | {channel_name}")
 plt.xlabel("Frequency (Hz)")
 plt.ylabel("Magnitude")
-plt.xlim(-1,60)              # focus on first 60 Hz part, others are filtered
+plt.xlim(-1,60)              # focus on first 60 Hz part, others are not shown
 plt.tight_layout()
 plt.show()
 
@@ -254,7 +254,7 @@ plt.figure(figsize=(20, 15))
 plt.pcolormesh(time_stft, freq_stft, np.abs(zxx), shading="gouraud")
 plt.title(f"Spectrogram | {participant_id} | {channel_name}")
 plt.xlabel("Time (s)")
-plt.ylim(0,60) 
+plt.ylim(0,30)                     # display up to 30 Hz 
 plt.ylabel("Frequency (Hz)")
 plt.colorbar(label="Magnitude")
 plt.tight_layout()
@@ -264,7 +264,7 @@ plt.show()
 #%% 4.4) Time-frequency analysis: Scalogram
 
 scales = np.linspace(8, 500, 96)
-coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor2.0-1.0", sampling_period=1 / fs)
+coefficients, cwt_frequencies = pywt.cwt(signal, scales, "gaus1", sampling_period=1 / fs)
 log_coefficients = np.log10(np.abs(coefficients) + 1)
 
 sort_index = np.argsort(cwt_frequencies)
@@ -292,80 +292,16 @@ plt.show()
 
 
 """
-eeg_df is a large dataframe that includes 13 columns:
-
-First column is "participant_id" lists 88 subjects with sub-XXX naming convention.
-
-Second column is "file_path" that includes the path of the .set file for each subject, not so important for now.
-
-Third column is "sfreq" that includes the sampling frequency of the signals, which is 500Hz for all subjects. No difference.
-
-Fourth column is "n_channels" that includes the number of channels, which is 19 for all subjects. No difference.
-
-Fifth column is "channel_names" that includes the names of the channels, which are the same for all subjects.
-
-The channel names are: ['Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4', 'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6', 'Fz', 'Cz', 'Pz'] Their order is same for all, no need to check them. 
-
-Next two columns are important for the division of signals: "n_times" and "duration_sec".
-
-"n_times" is the total number of time points in the signal, which varies among subjects.
-
-"duration_sec" is the total duration of the signal in seconds, which also varies among subjects. It is calculated by dividing "n_times" by "sfreq".
-
-8th column "signals_df" includes the actual EEG signals for corresponding subject, which is another dataframe. 
-
-Each "signals_df" has 20 columns: 1 "time_sec" + 19 EEG channels. "time_sec" corresponding timestamp in seconds for each time point, which is important for the division of signals.
-
-It starts with 0 and ends with the total duration of the signal in seconds, for that subject. The number of rows in "signals_df" is equal to "n_times" for that subject, which is the total number of time points in the signal.
-
-19 EEG channels follow the same channel order as "channel_names". They include our real signals. 
-
-9th column is "Gender" that includes the gender of the subjects. Not important for now.
-
-10th column is "Age" that includes the age of the subjects. Not important for now. 
-
-11th column is "group_code" that includes the group labels in A, F, C format. Their meanings are explained in the last column "group names". They represent our labels.
-
-12th column is "MMSE" that includes the Mini-Mental State Examination scores of the subjects. Not important for now.
-
-13th column is "group_name" that includes the group labels in a readable format.
-
-
-Your task is to divide the signals into equal parts, for example 1 minute (60 seconds, 60*500=30000 points) segments, and assign the corresponding labels and subject IDs to each segment.
-
-Assignment of subject IDs is crucial to prevent data leakage. 
-
-All the signals are located in the "signals_df" column, which is a dataframe for each subject.
-
-You should be minimalist. You can design a simple for loop with if-else statement to obtain these 1 minute segments, discarding the few remaining points.
-
-All of the resultant data must saved in a NumPy array, not a dataframe anymore. First column will be subject ID. Second column will be the label (A, F, C). 
-
-I will use ordinal encoding for the labels, where A=0, F=1, C=2. I can apply this in a different block of code. 
-
-We will use this NumPy array for train - val - test separation with stratified sampling. We will use subject IDs to ensure that all segments from the same subject are in the same set (train, val, or test) to prevent data leakage.
-
-Train will be 70%, validation will be 10½, and test will be 20½ of the total segments.
-
-As durations of signals vary among each subject, we have different numbers of segments attached to each subject. 
-
-For example, if a subject has 5 minutes of signal, we can obtain 5 segments of 1 minute each. If another subject has 3 minutes of signal, we can obtain 3 segments of 1 minute each. 
-
-This makes the prevention of data leakage in data splitting even harder to implement. We can try to design a minimalist function to handle this separation. 
-
 4 criteria for the separation; 
+
 1) Stratified sampling to maintain class balance in each set, 
 2) Subject-wise separation to prevent data leakage, 
 3) Randomization to ensure that the segments are randomly distributed across the sets.
-4) The total number of segments in each set should be approximately 70%, 10½, and 20½ of the total segments, respectively. 
+4) The total number of segments in each set should be approximately 70%, 10%, and 20% of the total segments, respectively. 
 
-Only for this complex operation, you can define a minimalist custom function. 
-
-In other cases, do not apply any abstraction, just use simple for loops and if-else statements to achieve the task. 
-
-Follow the style and minimalism of the previous codes in this file. 
-
-Add concise and simple comments to explain each line. 
+Dataset splitting is handled by 2 steps:
+    Train and temporary sets
+    Temporary set is splitted into test and validation 
 """
 
 
@@ -501,9 +437,12 @@ for _, subject_row in eeg_df.iterrows():    # look for every row of this datafra
 # 5.5) Convert lists to arrays (3D tensors)
 # (n_segments, 30000, 19)
 
-train_data = np.stack(train_data_list) if train_data_list else np.empty((0, segment_points, n_channels))
-val_data = np.stack(val_data_list) if val_data_list else np.empty((0, segment_points, n_channels))
-test_data = np.stack(test_data_list) if test_data_list else np.empty((0, segment_points, n_channels))
+train_data = np.stack(train_data_list).astype(np.float32) if train_data_list else np.empty((0, segment_points, n_channels), dtype=np.float32)
+val_data   = np.stack(val_data_list).astype(np.float32)   if val_data_list   else np.empty((0, segment_points, n_channels), dtype=np.float32)
+test_data  = np.stack(test_data_list).astype(np.float32)  if test_data_list  else np.empty((0, segment_points, n_channels), dtype=np.float32)
+
+# ---- reduced storage size by float64 to float32
+
 
 
 # segment IDs to arrays 
@@ -550,7 +489,28 @@ print("test_data shape:", test_data.shape)
 
 
 
-# 5.7) Delete temporary variables to free memory
+
+
+# 5.7) Rescale the signal values
+
+"""
+MNE reads EEGLAB .set files in Volts; but the device sensitivity is 10 uV/mm (see dataset README)
+so the native physical unit is microvolts. Multiplying by 1e6 brings the
+signal into uV range (approx +-150 uV), which is the standard EEG amplitude scale.
+
+Multiply with 1*10^6 for -> uV scale
+Multiply with 1*10^3 for -> mV scale
+"""
+scale_factor = 1000                                             
+train_data   = train_data * scale_factor
+val_data     = val_data   * scale_factor
+test_data    = test_data  * scale_factor
+
+
+
+
+
+# 5.8) Delete temporary variables to free memory
 
 
 del (
@@ -573,7 +533,7 @@ del (
  
 
 
-#%% Optional: To check the IDs manually 
+#%% Optional 1: To check the IDs manually 
 
 
 # Any ID cannot be occured twice, to prevent data leakage & provide subject separation
@@ -611,10 +571,557 @@ print("Saved Excel files to:", desktop)
 
 
 
-#%% 6) Data transformation for model input 
+#%% 6) Data transformation for feature extraction: CWT scalograms
+
+
+
+# CWT parameters 
+scales_cwt        = np.linspace(8, 500, 60)                    
+downsample_factor = 10                                         # downsample time axis: 30000 -> 3000
+n_time_ds         = segment_points // downsample_factor        # time points after downsampling
+n_scales_cwt      = len(scales_cwt)                            # frequency bins
+
+
+
+def extract_cwt_scalogram(signal_1d, scales, fs=fs, downsample=downsample_factor):
+
+    # Apply CWT on a single-channel signal 
+    
+    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+    log_coefficients = np.log10(np.abs(coefficients) + 1)  
+    
+    return log_coefficients[:, ::downsample].astype(np.float32) 
+
+
+
+
+# Prepare scalogram arrays for each split
+
+train_scalograms = np.zeros((len(train_data), n_channels, n_scales_cwt, n_time_ds), dtype=np.float32)
+val_scalograms   = np.zeros((len(val_data),   n_channels, n_scales_cwt, n_time_ds), dtype=np.float32)
+test_scalograms  = np.zeros((len(test_data),  n_channels, n_scales_cwt, n_time_ds), dtype=np.float32)
+
+
+print("Computing CWT scalograms — this may take several minutes...")
+
+for i in range(len(train_data)):
+    for ch in range(n_channels):
+        train_scalograms[i, ch] = extract_cwt_scalogram(train_data[i, :, ch], scales_cwt)
+    if (i + 1) % 50 == 0:
+        print(f"  Train: {i + 1} / {len(train_data)}")
+
+for i in range(len(val_data)):
+    for ch in range(n_channels):
+        val_scalograms[i, ch] = extract_cwt_scalogram(val_data[i, :, ch], scales_cwt)
+
+for i in range(len(test_data)):
+    for ch in range(n_channels):
+        test_scalograms[i, ch] = extract_cwt_scalogram(test_data[i, :, ch], scales_cwt)
+
+
+print("train_scalograms shape:", train_scalograms.shape)       
+print("val_scalograms shape:  ", val_scalograms.shape)
+print("test_scalograms shape: ", test_scalograms.shape)
+
+
+
+# Expected size per segment: n_channels * n_scales_cwt * n_time_ds * 4 bytes (float32)
+bytes_per_segment = n_channels * n_scales_cwt * n_time_ds * 4
+total_segments    = len(train_scalograms) + len(val_scalograms) + len(test_scalograms)
+total_gb          = bytes_per_segment * total_segments / 1e9
+
+print(f"\nSize estimate: {bytes_per_segment / 1e6:.1f} MB/segment × {total_segments} segments = {total_gb:.1f} GB total")
+print(f"  → To reduce: lower n_scales_cwt (currently {n_scales_cwt}) or increase downsample_factor (currently {downsample_factor})")
+
+
+
+#%% Optional 2: Load from your disk 
+
+# Optional: save to disk to skip recomputation next time
+np.save(BASE_DIR / "train_scalograms.npy",     train_scalograms)
+np.save(BASE_DIR / "val_scalograms.npy",       val_scalograms)
+np.save(BASE_DIR / "test_scalograms.npy",      test_scalograms)
+np.save(BASE_DIR / "train_segment_labels.npy", train_segment_labels)
+np.save(BASE_DIR / "val_segment_labels.npy",   val_segment_labels)
+np.save(BASE_DIR / "test_segment_labels.npy",  test_segment_labels)
+
+
+"""
+# Optional: load from disk (also restores label arrays needed for cell 7)
+train_scalograms      = np.load(BASE_DIR / "train_scalograms.npy")
+val_scalograms        = np.load(BASE_DIR / "val_scalograms.npy")
+test_scalograms       = np.load(BASE_DIR / "test_scalograms.npy")
+train_segment_labels  = np.load(BASE_DIR / "train_segment_labels.npy", allow_pickle=True)
+val_segment_labels    = np.load(BASE_DIR / "val_segment_labels.npy",   allow_pickle=True)
+test_segment_labels   = np.load(BASE_DIR / "test_segment_labels.npy",  allow_pickle=True)
+"""
+
+
+#%% 7) EfficientNet-B3: Training and evaluation
+
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.metrics import (accuracy_score, f1_score, recall_score, precision_score,
+                              confusion_matrix, roc_curve, auc)
+from sklearn.preprocessing import label_binarize
+import seaborn as sns
+
+
+print("CUDA available:", torch.cuda.is_available())
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device: {device}")
+
+
+
+
+# ----Hyperparameters
+lr           = 0.001
+batch_size   = 8
+epochs       = 200
+patience     = 40
+dropout      = 0.1
+weight_decay = 0.01
+
+
+
+# Label encoding: A=0, F=1, C=2
+label_map        = {"A": 0, "F": 1, "C": 2}
+train_labels_int = np.array([label_map[l] for l in train_segment_labels], dtype=np.int64)
+val_labels_int   = np.array([label_map[l] for l in val_segment_labels],   dtype=np.int64)
+test_labels_int  = np.array([label_map[l] for l in test_segment_labels],  dtype=np.int64)
+
+
+
+#  Convert to tensors and build DataLoaders
+train_tensor = torch.tensor(train_scalograms, dtype=torch.float32)
+val_tensor   = torch.tensor(val_scalograms,   dtype=torch.float32)
+test_tensor  = torch.tensor(test_scalograms,  dtype=torch.float32)
+
+train_loader = DataLoader(TensorDataset(train_tensor, torch.tensor(train_labels_int)), batch_size=batch_size, shuffle=True)
+val_loader   = DataLoader(TensorDataset(val_tensor,   torch.tensor(val_labels_int)),   batch_size=batch_size, shuffle=False)
+test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_int)),  batch_size=batch_size, shuffle=False)
+
+
+
+# ----Model: EfficientNet from scratch
+"""
+Accepts (batch, in_channels, H, W) for any spatial size via AdaptiveAvgPool2d
+Width=1.2, Depth=1.4 multipliers over EfficientNet-B0 base
+"""
+
+
+# Function definition 1
+class SEBlock(nn.Module):
+    """Squeeze-and-Excitation attention block"""
+    def __init__(self, channels, squeeze_channels):
+        super().__init__()
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, squeeze_channels, 1, bias=True),
+            nn.SiLU(),
+            nn.Conv2d(squeeze_channels, channels, 1, bias=True),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        return x * self.se(x)                      # channel-wise attention
+
+
+
+# Function definition 2
+class MBConv(nn.Module):
+    """Mobile inverted bottleneck: depthwise separable conv + SE + SiLU + stochastic depth"""
+    def __init__(self, in_ch, out_ch, kernel_size, stride, expand_ratio, se_ratio=0.25, sd_prob=0.0):
+        super().__init__()
+        mid_ch        = in_ch * expand_ratio
+        self.use_skip = (stride == 1 and in_ch == out_ch)
+        self.sd_prob  = sd_prob
+
+        layers = []
+        if expand_ratio != 1:                                  # expansion phase (skipped in stage 1)
+            layers += [nn.Conv2d(in_ch, mid_ch, 1, bias=False),
+                       nn.BatchNorm2d(mid_ch, momentum=0.01, eps=1e-3),
+                       nn.SiLU()]
+        layers += [
+            nn.Conv2d(mid_ch, mid_ch, kernel_size, stride=stride,
+                      padding=kernel_size // 2, groups=mid_ch, bias=False),   # depthwise
+            nn.BatchNorm2d(mid_ch, momentum=0.01, eps=1e-3),
+            nn.SiLU(),
+            SEBlock(mid_ch, max(1, int(in_ch * se_ratio))),    # squeeze dim uses in_ch
+            nn.Conv2d(mid_ch, out_ch, 1, bias=False),          # pointwise projection
+            nn.BatchNorm2d(out_ch, momentum=0.01, eps=1e-3),
+        ]
+        self.block = nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.block(x)
+        if self.use_skip:
+            if self.training and self.sd_prob > 0.0:           # stochastic depth: drop residual randomly
+                keep = torch.rand(x.shape[0], 1, 1, 1, device=x.device) > self.sd_prob
+                out  = out * keep.float()
+            return x + out
+        return out
 
 
 
 
 
+# Model definition
+class EfficientNetB0(nn.Module):
+    def __init__(self, in_channels=19, num_classes=3, dropout=0.02):
+        super().__init__()
+        w, d = 1.0, 1.0                                        # B0 multipliers: smaller capacity 
 
+        def round_ch(c, div=8):                                
+            new_c = max(div, int(c + div / 2) // div * div)
+            if new_c < 0.9 * c:
+                new_c += div
+            return new_c
+
+        stem_ch = round_ch(32 * w)                             
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, stem_ch, 3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(stem_ch, momentum=0.01, eps=1e-3),
+            nn.SiLU(),
+        )
+
+        # (expand_ratio, base_out_ch, kernel_size, stride, base_num_layers)
+        stage_cfg = [
+            (1,  16,  3, 1, 1),
+            (6,  24,  3, 2, 2),
+            (6,  40,  5, 2, 2),
+            (6,  80,  3, 2, 3),
+            (6, 112,  5, 1, 3),
+            (6, 192,  5, 2, 4),
+            (6, 320,  3, 1, 1),
+        ]
+
+        total_blocks = sum(max(1, int(np.ceil(n * d))) for *_, n in stage_cfg)
+        block_count  = 0
+        in_ch        = stem_ch
+        blocks       = []
+
+        for expand, base_out, k, stride, base_n in stage_cfg:
+            out_ch = round_ch(base_out * w)
+            n      = max(1, int(np.ceil(base_n * d)))
+            for i in range(n):
+                sd_prob = 0.2 * block_count / total_blocks     # linear stochastic depth schedule
+                blocks.append(
+                    MBConv(in_ch, out_ch, k, stride if i == 0 else 1, expand, sd_prob=sd_prob)
+                )
+                in_ch        = out_ch
+                block_count += 1
+
+        self.blocks = nn.Sequential(*blocks)
+
+        head_ch = round_ch(1280 * w)                           
+        self.head = nn.Sequential(
+            nn.Conv2d(in_ch, head_ch, 1, bias=False),
+            nn.BatchNorm2d(head_ch, momentum=0.01, eps=1e-3),
+            nn.SiLU(),
+        )
+
+        # Adaptive average pooling - works with any spatial size 
+        self.pool       = nn.AdaptiveAvgPool2d(1)           
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(head_ch, num_classes),
+        )
+        
+        
+        # Kaiming initialization to initialize the weights of model
+        for m in self.modules():                               
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.zeros_(m.bias)
+
+    def forward(self, x):
+        x = self.stem(x)
+        x = self.blocks(x)
+        x = self.head(x)
+        x = self.pool(x)
+        x = torch.flatten(x, 1)
+        return self.classifier(x)
+
+
+
+# Assign this model to use in the code
+model = EfficientNetB0(in_channels=n_channels, num_classes=3, dropout=dropout).to(device)
+
+
+# ----Loss function, optimizer, and cosine LR scheduler
+criterion = nn.CrossEntropyLoss(label_smoothing=0.1)           # label smoothing can reduce overconfident predictions
+optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+
+
+
+
+#  Training and validation loop
+train_losses     = []
+val_losses       = []
+train_accuracies = []
+val_accuracies   = []
+
+best_val_loss          = float("inf")       # dummy loss value to decide it is improving 
+best_model_state       = None
+early_stopping_counter = 0
+
+
+
+for epoch in range(epochs):
+
+    # Training phase
+    model.train()
+    running_loss = 0.0
+    y_true_train = []
+    y_pred_train = []
+
+    for inputs, labels in train_loader:
+        inputs, labels = inputs.to(device), labels.to(device)
+        optimizer.zero_grad()
+        outputs = model(inputs)
+        loss    = criterion(outputs, labels)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        # Gradient clipping: prevent gradient spikes
+
+        optimizer.step()
+
+        running_loss += loss.item()
+        _, predicted  = torch.max(outputs, 1)
+        y_true_train.extend(labels.cpu().numpy())
+        y_pred_train.extend(predicted.cpu().numpy())
+
+    train_loss     = running_loss / len(train_loader)
+    train_accuracy = accuracy_score(y_true_train, y_pred_train) * 100
+    train_losses.append(train_loss)
+    train_accuracies.append(train_accuracy)
+
+
+    # Validation phase
+    model.eval()
+    val_running_loss = 0.0
+    y_true_val = []
+    y_pred_val = []
+
+    with torch.no_grad():
+        for inputs, labels in val_loader:
+            inputs, labels = inputs.to(device), labels.to(device)
+            outputs  = model(inputs)
+            loss     = criterion(outputs, labels)
+            val_running_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            y_true_val.extend(labels.cpu().numpy())
+            y_pred_val.extend(predicted.cpu().numpy())
+
+    val_loss     = val_running_loss / len(val_loader)
+    val_accuracy = accuracy_score(y_true_val, y_pred_val) * 100
+    val_losses.append(val_loss)
+    val_accuracies.append(val_accuracy)
+
+    scheduler.step()
+
+    # Early stopping: save best weights based on validation loss  
+    if val_loss < best_val_loss:                                  
+        best_val_loss          = val_loss                         
+        best_model_state       = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        early_stopping_counter = 0
+    else:
+        early_stopping_counter += 1
+
+    if early_stopping_counter >= patience:
+        print(f"Early stopping triggered at epoch {epoch + 1}")
+        break
+
+    print(f"Epoch {epoch+1}/{epochs}  |  Train Loss: {train_loss:.4f}  Train Acc: {train_accuracy:.2f}%  |  Val Loss: {val_loss:.4f}  Val Acc: {val_accuracy:.2f}%")
+
+
+
+
+# Restore best model weights
+print(f"\nRestoring best model — Val Loss: {best_val_loss:.4f}")   
+best_model_state = {k: v.to(device) for k, v in best_model_state.items()}
+model.load_state_dict(best_model_state)
+
+
+
+
+
+# Validation set evaluation — use this to compare experiments
+model.eval()
+y_true_val  = []
+y_pred_val  = []
+y_proba_val = []
+
+with torch.no_grad():
+    for inputs, labels in val_loader:                         # val_loader, not test_loader
+        inputs, labels = inputs.to(device), labels.to(device)
+        outputs      = model(inputs)
+        proba        = torch.softmax(outputs, dim=1)           # probabilities for ROC
+        _, predicted = torch.max(outputs, 1)
+        y_true_val.extend(labels.cpu().numpy())
+        y_pred_val.extend(predicted.cpu().numpy())
+        y_proba_val.extend(proba.cpu().numpy())
+
+y_true_val  = np.array(y_true_val)
+y_pred_val  = np.array(y_pred_val)
+y_proba_val = np.array(y_proba_val)
+
+
+# Val classification metrics
+acc_val  = accuracy_score(y_true_val, y_pred_val)
+f1_val   = f1_score(y_true_val, y_pred_val, average="weighted")
+prec_val = precision_score(y_true_val, y_pred_val, average="weighted", zero_division=0)
+rec_val  = recall_score(y_true_val, y_pred_val, average="weighted")
+
+print(f"\nVal Accuracy:  {acc_val  * 100:.2f}%")
+print(f"Val F1:        {f1_val   * 100:.2f}%")
+print(f"Val Precision: {prec_val * 100:.2f}%")
+print(f"Val Recall:    {rec_val  * 100:.2f}%")
+
+
+# Val confusion matrix
+cm_val = confusion_matrix(y_true_val, y_pred_val)
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_val, annot=True, fmt="d", cmap="Blues",
+            xticklabels=["AD", "FTD", "HC"],
+            yticklabels=["AD", "FTD", "HC"])
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+plt.title("Confusion Matrix - Validation")
+plt.tight_layout()
+plt.show()
+
+
+# Training and validation loss / accuracy curves
+plt.figure(figsize=(14, 5))
+
+plt.subplot(1, 2, 1)
+plt.plot(train_losses, label="Train")
+plt.plot(val_losses,   label="Validation")
+plt.title("Loss over epochs")
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.legend()
+
+plt.subplot(1, 2, 2)
+plt.plot(train_accuracies, label="Train")
+plt.plot(val_accuracies,   label="Validation")
+plt.title("Accuracy over epochs")
+plt.xlabel("Epoch")
+plt.ylabel("Accuracy (%)")
+plt.legend()
+
+plt.tight_layout()
+plt.show()
+
+
+# Val ROC curves (one-vs-rest)
+class_names_roc = ["AD (A)", "FTD (F)", "HC (C)"]
+y_true_val_bin  = label_binarize(y_true_val, classes=[0, 1, 2])
+
+plt.figure(figsize=(8, 6))
+for i in range(3):
+    fpr, tpr, _ = roc_curve(y_true_val_bin[:, i], y_proba_val[:, i])
+    auc_score   = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f"{class_names_roc[i]}  AUC = {auc_score:.3f}")
+
+plt.plot([0, 1], [0, 1], "k--", label="Random")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curves (One-vs-Rest) - Validation")
+plt.legend(loc="lower right")
+plt.tight_layout()
+plt.show()
+
+
+
+#%% 8) Final test evaluation — after all experiments are done
+
+
+
+
+model.eval()
+y_true_test  = []
+y_pred_test  = []
+y_proba_test = []
+
+with torch.no_grad():
+    for inputs, labels in test_loader:                         
+        inputs, labels = inputs.to(device), labels.to(device)
+        outputs      = model(inputs)
+        proba        = torch.softmax(outputs, dim=1)
+        _, predicted = torch.max(outputs, 1)
+        y_true_test.extend(labels.cpu().numpy())
+        y_pred_test.extend(predicted.cpu().numpy())
+        y_proba_test.extend(proba.cpu().numpy())
+
+y_true_test  = np.array(y_true_test)
+y_pred_test  = np.array(y_pred_test)
+y_proba_test = np.array(y_proba_test)
+
+
+# Test classification metrics
+acc_test  = accuracy_score(y_true_test, y_pred_test)
+f1_test   = f1_score(y_true_test, y_pred_test, average="weighted")
+prec_test = precision_score(y_true_test, y_pred_test, average="weighted", zero_division=0)
+rec_test  = recall_score(y_true_test, y_pred_test, average="weighted")
+
+print(f"\nTest Accuracy:  {acc_test  * 100:.2f}%")
+print(f"Test F1:        {f1_test   * 100:.2f}%")
+print(f"Test Precision: {prec_test * 100:.2f}%")
+print(f"Test Recall:    {rec_test  * 100:.2f}%")
+
+
+# Test confusion matrix
+cm_test = confusion_matrix(y_true_test, y_pred_test)
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_test, annot=True, fmt="d", cmap="Blues",
+            xticklabels=["AD", "FTD", "HC"],
+            yticklabels=["AD", "FTD", "HC"])
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+plt.title("Confusion Matrix - Test")
+plt.tight_layout()
+plt.show()
+
+
+# Test ROC curves
+y_true_test_bin = label_binarize(y_true_test, classes=[0, 1, 2])
+
+plt.figure(figsize=(8, 6))
+for i in range(3):
+    fpr, tpr, _ = roc_curve(y_true_test_bin[:, i], y_proba_test[:, i])
+    auc_score   = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f"{class_names_roc[i]}  AUC = {auc_score:.3f}")
+
+plt.plot([0, 1], [0, 1], "k--", label="Random")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curves (One-vs-Rest) - Test")
+plt.legend(loc="lower right")
+plt.tight_layout()
+plt.show()
+
+
+
+
+"""
+model can optionally be saved here:
+torch.save(best_model_state, "best_model.pth")
+best_model_state = torch.load("best_model.pth", map_location=device)
+model.load_state_dict(best_model_state)
+"""
