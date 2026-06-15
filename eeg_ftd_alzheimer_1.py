@@ -178,13 +178,13 @@ plt.tight_layout()
 plt.show()
 
 
-#%% 4) Frequency analyses for one channel
+#%% 4.1) Frequency analyses for one channel
 
 signal = subject_signals[channel_name].to_numpy()
 fs = 500
 
 
-# 4.1) Time domain
+#  Time domain
 
 plt.figure(figsize=(57, 10))
 plt.plot(time_sec, signal, linewidth=0.8)
@@ -196,7 +196,7 @@ plt.show()
 
 
 
-# 4.2) Frequency domain: FFT
+#  Frequency domain: FFT
 
 fft_values = np.abs(fft(signal))
 frequencies = fftfreq(len(signal), d=1 / fs)   # linear x-axis for frequencies
@@ -288,7 +288,7 @@ plt.show()
 
 
 
-#%% 5) Dataset preparation: Splitting and segmentation
+#%% 5.1) Dataset preparation: Splitting and segmentation
 
 
 """
@@ -338,7 +338,8 @@ train_subject_ids, temp_subject_ids, _, _ = train_test_split(
 
 
 # Second split: divide 30% temp into 10% val and 20% test
-temp_labels = eeg_df.loc[eeg_df["participant_id"].isin(temp_subject_ids), "group_code"].to_numpy()
+
+temp_labels = eeg_df.set_index("participant_id").loc[temp_subject_ids, "group_code"].to_numpy()
 
 val_subject_ids, test_subject_ids, _, _ = train_test_split(
     temp_subject_ids,
@@ -347,6 +348,7 @@ val_subject_ids, test_subject_ids, _, _ = train_test_split(
     stratify=temp_labels,
     random_state=42,
 )
+
 
 
 
@@ -458,6 +460,7 @@ test_segment_labels = np.array(test_segment_labels)
 
 
 
+
 # 5.6) Final shuffle on segments in each split (prevent order bias & obtain better mixture)
 
 train_data, train_segment_ids, train_segment_labels = shuffle(
@@ -530,7 +533,66 @@ del (
     eeg_df
 )
 
- 
+
+
+#%% 5.2) Class counts by subjects and by segments
+
+
+# Subject-level class counts (derived from unique subject IDs per split)
+train_subject_df = pd.DataFrame(
+    {"participant_id": train_segment_ids.astype(str), "label": train_segment_labels.astype(str)}
+).drop_duplicates(subset=["participant_id"])
+
+val_subject_df = pd.DataFrame(
+    {"participant_id": val_segment_ids.astype(str), "label": val_segment_labels.astype(str)}
+).drop_duplicates(subset=["participant_id"])
+
+test_subject_df = pd.DataFrame(
+    {"participant_id": test_segment_ids.astype(str), "label": test_segment_labels.astype(str)}
+).drop_duplicates(subset=["participant_id"])
+
+subject_count_df = pd.DataFrame(
+    {
+        "Train": train_subject_df["label"].value_counts(),
+        "Validation": val_subject_df["label"].value_counts(),
+        "Test": test_subject_df["label"].value_counts(),
+    }
+).fillna(0).astype(int).reindex(["A", "F", "C"])
+
+print("\nSubject-level class counts")
+print(subject_count_df)
+
+ax = subject_count_df.plot(kind="bar", figsize=(10, 5))
+ax.set_title("Class counts by subjects")
+ax.set_xlabel("Class")
+ax.set_ylabel("Count")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
+
+
+# Segment-level class counts
+segment_count_df = pd.DataFrame(
+    {
+        "Train": pd.Series(train_segment_labels.astype(str)).value_counts(),
+        "Validation": pd.Series(val_segment_labels.astype(str)).value_counts(),
+        "Test": pd.Series(test_segment_labels.astype(str)).value_counts(),
+    }
+).fillna(0).astype(int).reindex(["A", "F", "C"])
+
+print("\nSegment-level class counts")
+print(segment_count_df)
+
+ax = segment_count_df.plot(kind="bar", figsize=(10, 5))
+ax.set_title("Class counts by segments")
+ax.set_xlabel("Class")
+ax.set_ylabel("Count")
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
+
+
+
 
 
 #%% Optional 1: To check the IDs manually 
@@ -587,7 +649,7 @@ def extract_cwt_scalogram(signal_1d, scales, fs=fs, downsample=downsample_factor
 
     # Apply CWT on a single-channel signal 
     
-    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-1.0-1.0", sampling_period=1 / fs)
     log_coefficients = np.log10(np.abs(coefficients) + 1)  
     
     return log_coefficients[:, ::downsample].astype(np.float32) 
@@ -625,6 +687,7 @@ print("test_scalograms shape: ", test_scalograms.shape)
 
 
 
+
 # Expected size per segment: n_channels * n_scales_cwt * n_time_ds * 4 bytes (float32)
 bytes_per_segment = n_channels * n_scales_cwt * n_time_ds * 4
 total_segments    = len(train_scalograms) + len(val_scalograms) + len(test_scalograms)
@@ -636,6 +699,7 @@ print(f"  → To reduce: lower n_scales_cwt (currently {n_scales_cwt}) or increa
 
 
 #%% Optional 2: Load from your disk 
+
 
 # Optional: save to disk to skip recomputation next time
 np.save(BASE_DIR / "train_scalograms.npy",     train_scalograms)
@@ -657,7 +721,7 @@ test_segment_labels   = np.load(BASE_DIR / "test_segment_labels.npy",  allow_pic
 """
 
 
-#%% 7) EfficientNet-B3: Training and evaluation
+#%% 7) EfficientNet: Training and evaluation
 
 
 import torch
@@ -681,9 +745,10 @@ print(f"Device: {device}")
 lr           = 0.001
 batch_size   = 8
 epochs       = 200
-patience     = 40
 dropout      = 0.1
 weight_decay = 0.01
+# momentum
+# label_smoothing
 
 
 
@@ -734,6 +799,7 @@ class SEBlock(nn.Module):
 # Function definition 2
 class MBConv(nn.Module):
     """Mobile inverted bottleneck: depthwise separable conv + SE + SiLU + stochastic depth"""
+    
     def __init__(self, in_ch, out_ch, kernel_size, stride, expand_ratio, se_ratio=0.25, sd_prob=0.0):
         super().__init__()
         mid_ch        = in_ch * expand_ratio
@@ -771,9 +837,9 @@ class MBConv(nn.Module):
 
 # Model definition
 class EfficientNetB0(nn.Module):
-    def __init__(self, in_channels=19, num_classes=3, dropout=0.02):
+    def __init__(self, in_channels=19, num_classes=3, dropout=dropout):
         super().__init__()
-        w, d = 1.0, 1.0                                        # B0 multipliers: smaller capacity 
+        w, d = 1.2, 1.4                                        
 
         def round_ch(c, div=8):                                
             new_c = max(div, int(c + div / 2) // div * div)
@@ -832,10 +898,11 @@ class EfficientNetB0(nn.Module):
         )
         
         
-        # Kaiming initialization to initialize the weights of model
-        for m in self.modules():                               
+        # fan_in mode preserves forward-pass variance; more appropriate than fan_out for SiLU
+        # (SiLU has ~0.5 derivative at 0, unlike ReLU's 1.0 assumed by fan_out)
+        for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out")
+                nn.init.kaiming_normal_(m.weight, mode="fan_in")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
             elif isinstance(m, nn.BatchNorm2d):
@@ -859,8 +926,9 @@ class EfficientNetB0(nn.Module):
 model = EfficientNetB0(in_channels=n_channels, num_classes=3, dropout=dropout).to(device)
 
 
+
 # ----Loss function, optimizer, and cosine LR scheduler
-criterion = nn.CrossEntropyLoss(label_smoothing=0.1)           # label smoothing can reduce overconfident predictions
+criterion = nn.CrossEntropyLoss(label_smoothing=0.05)          # prevents logits from growing 
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -872,10 +940,6 @@ train_losses     = []
 val_losses       = []
 train_accuracies = []
 val_accuracies   = []
-
-best_val_loss          = float("inf")       # dummy loss value to decide it is improving 
-best_model_state       = None
-early_stopping_counter = 0
 
 
 
@@ -932,27 +996,12 @@ for epoch in range(epochs):
 
     scheduler.step()
 
-    # Early stopping: save best weights based on validation loss  
-    if val_loss < best_val_loss:                                  
-        best_val_loss          = val_loss                         
-        best_model_state       = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        early_stopping_counter = 0
-    else:
-        early_stopping_counter += 1
-
-    if early_stopping_counter >= patience:
-        print(f"Early stopping triggered at epoch {epoch + 1}")
-        break
-
     print(f"Epoch {epoch+1}/{epochs}  |  Train Loss: {train_loss:.4f}  Train Acc: {train_accuracy:.2f}%  |  Val Loss: {val_loss:.4f}  Val Acc: {val_accuracy:.2f}%")
 
 
 
 
-# Restore best model weights
-print(f"\nRestoring best model — Val Loss: {best_val_loss:.4f}")   
-best_model_state = {k: v.to(device) for k, v in best_model_state.items()}
-model.load_state_dict(best_model_state)
+# Training complete — evaluating with final weights
 
 
 
@@ -1125,3 +1174,96 @@ torch.save(best_model_state, "best_model.pth")
 best_model_state = torch.load("best_model.pth", map_location=device)
 model.load_state_dict(best_model_state)
 """
+
+
+#%% 9) Subject-level test evaluation (using cell 8 outputs)
+
+# Safety check
+print("len(y_true_test):     ", len(y_true_test))
+print("len(y_pred_test):     ", len(y_pred_test))
+print("len(y_proba_test):    ", len(y_proba_test))
+print("len(test_segment_ids):", len(test_segment_ids))
+
+assert len(y_true_test) == len(test_segment_ids), "Mismatch between y_true_test and test_segment_ids"
+assert len(y_pred_test) == len(test_segment_ids), "Mismatch between y_pred_test and test_segment_ids"
+assert len(y_proba_test) == len(test_segment_ids), "Mismatch between y_proba_test and test_segment_ids"
+
+
+# Aggregate to subject-level by mean probability
+subject_proba_dict = {}
+subject_true_dict = {}
+
+for i in range(len(test_segment_ids)):
+    sid = str(test_segment_ids[i])
+
+    if sid not in subject_proba_dict:
+        subject_proba_dict[sid] = []
+    subject_proba_dict[sid].append(y_proba_test[i])
+
+    if sid not in subject_true_dict:
+        subject_true_dict[sid] = int(y_true_test[i])
+
+subject_ids_sorted = sorted(subject_proba_dict.keys())
+
+y_true_test_subject = []
+y_pred_test_subject = []
+y_proba_test_subject = []
+
+for sid in subject_ids_sorted:
+    proba_array = np.array(subject_proba_dict[sid])   # (n_segments_subject, 3)
+    mean_proba = proba_array.mean(axis=0)             # (3,)
+    pred_class = int(np.argmax(mean_proba))
+
+    y_true_test_subject.append(subject_true_dict[sid])
+    y_pred_test_subject.append(pred_class)
+    y_proba_test_subject.append(mean_proba)
+
+y_true_test_subject = np.array(y_true_test_subject)
+y_pred_test_subject = np.array(y_pred_test_subject)
+y_proba_test_subject = np.array(y_proba_test_subject)
+
+
+# Subject-level metrics
+acc_test_subject  = accuracy_score(y_true_test_subject, y_pred_test_subject)
+f1_test_subject   = f1_score(y_true_test_subject, y_pred_test_subject, average="weighted")
+prec_test_subject = precision_score(y_true_test_subject, y_pred_test_subject, average="weighted", zero_division=0)
+rec_test_subject  = recall_score(y_true_test_subject, y_pred_test_subject, average="weighted")
+
+print(f"\nSubject-level Test Accuracy:  {acc_test_subject  * 100:.2f}%")
+print(f"Subject-level Test F1:        {f1_test_subject   * 100:.2f}%")
+print(f"Subject-level Test Precision: {prec_test_subject * 100:.2f}%")
+print(f"Subject-level Test Recall:    {rec_test_subject  * 100:.2f}%")
+print(f"Number of test subjects:      {len(y_true_test_subject)}")
+
+
+# Subject-level confusion matrix
+cm_test_subject = confusion_matrix(y_true_test_subject, y_pred_test_subject)
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(cm_test_subject, annot=True, fmt="d", cmap="Blues",
+            xticklabels=["AD", "FTD", "HC"],
+            yticklabels=["AD", "FTD", "HC"])
+plt.xlabel("Predicted label")
+plt.ylabel("True label")
+plt.title("Confusion Matrix - Test (Subject-level)")
+plt.tight_layout()
+plt.show()
+
+
+# Subject-level ROC curves
+y_true_test_subject_bin = label_binarize(y_true_test_subject, classes=[0, 1, 2])
+
+plt.figure(figsize=(8, 6))
+for i in range(3):
+    fpr, tpr, _ = roc_curve(y_true_test_subject_bin[:, i], y_proba_test_subject[:, i])
+    auc_score = auc(fpr, tpr)
+    plt.plot(fpr, tpr, label=f"{class_names_roc[i]}  AUC = {auc_score:.3f}")
+
+plt.plot([0, 1], [0, 1], "k--", label="Random")
+plt.xlabel("False Positive Rate")
+plt.ylabel("True Positive Rate")
+plt.title("ROC Curves (One-vs-Rest) - Test (Subject-level)")
+plt.legend(loc="lower right")
+plt.tight_layout()
+plt.show()
+
