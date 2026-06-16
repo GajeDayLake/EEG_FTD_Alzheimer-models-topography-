@@ -180,7 +180,7 @@ plt.show()
 
 #%% 4.1) Frequency analyses for one channel
 
-signal = subject_signals[channel_name].to_numpy()
+signal = subject_signals[channel_name].to_numpy()*1000  # Volts to mV scale 
 fs = 500
 
 
@@ -263,9 +263,10 @@ plt.show()
 
 #%% 4.4) Time-frequency analysis: Scalogram
 
-scales = np.linspace(8, 500, 96)
-coefficients, cwt_frequencies = pywt.cwt(signal, scales, "gaus1", sampling_period=1 / fs)
-log_coefficients = np.log10(np.abs(coefficients) + 1)
+scales = np.linspace(11, 500, 60)  # from 1 Hz to 45 Hz , 60 frequencies
+
+coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+log_coefficients = 10*np.log10(np.abs(coefficients) + 1)
 
 sort_index = np.argsort(cwt_frequencies)
 cwt_frequencies = cwt_frequencies[sort_index]
@@ -494,7 +495,7 @@ print("test_data shape:", test_data.shape)
 
 
 
-# 5.7) Rescale the signal values
+# ----Rescale the signal values
 
 """
 MNE reads EEGLAB .set files in Volts; but the device sensitivity is 10 uV/mm (see dataset README)
@@ -638,7 +639,7 @@ print("Saved Excel files to:", desktop)
 
 
 # CWT parameters 
-scales_cwt        = np.linspace(8, 500, 60)                    
+scales_cwt        = np.linspace(11, 500, 60)                    
 downsample_factor = 10                                         # downsample time axis: 30000 -> 3000
 n_time_ds         = segment_points // downsample_factor        # time points after downsampling
 n_scales_cwt      = len(scales_cwt)                            # frequency bins
@@ -649,8 +650,8 @@ def extract_cwt_scalogram(signal_1d, scales, fs=fs, downsample=downsample_factor
 
     # Apply CWT on a single-channel signal 
     
-    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-1.0-1.0", sampling_period=1 / fs)
-    log_coefficients = np.log10(np.abs(coefficients) + 1)  
+    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+    log_coefficients = 10*np.log10(np.abs(coefficients) + 1)  
     
     return log_coefficients[:, ::downsample].astype(np.float32) 
 
@@ -701,6 +702,11 @@ print(f"  → To reduce: lower n_scales_cwt (currently {n_scales_cwt}) or increa
 #%% Optional 2: Load from your disk 
 
 
+BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd()
+WORKSPACE_DIR = BASE_DIR.parent if BASE_DIR.name == "EEG_FTD_Alzheimer" else BASE_DIR
+
+
+"""
 # Optional: save to disk to skip recomputation next time
 np.save(BASE_DIR / "train_scalograms.npy",     train_scalograms)
 np.save(BASE_DIR / "val_scalograms.npy",       val_scalograms)
@@ -708,9 +714,9 @@ np.save(BASE_DIR / "test_scalograms.npy",      test_scalograms)
 np.save(BASE_DIR / "train_segment_labels.npy", train_segment_labels)
 np.save(BASE_DIR / "val_segment_labels.npy",   val_segment_labels)
 np.save(BASE_DIR / "test_segment_labels.npy",  test_segment_labels)
-
-
 """
+
+
 # Optional: load from disk (also restores label arrays needed for cell 7)
 train_scalograms      = np.load(BASE_DIR / "train_scalograms.npy")
 val_scalograms        = np.load(BASE_DIR / "val_scalograms.npy")
@@ -718,10 +724,115 @@ test_scalograms       = np.load(BASE_DIR / "test_scalograms.npy")
 train_segment_labels  = np.load(BASE_DIR / "train_segment_labels.npy", allow_pickle=True)
 val_segment_labels    = np.load(BASE_DIR / "val_segment_labels.npy",   allow_pickle=True)
 test_segment_labels   = np.load(BASE_DIR / "test_segment_labels.npy",  allow_pickle=True)
-"""
 
 
-#%% 7) EfficientNet: Training and evaluation
+
+
+#%% Optional 3: Diagnostics on labels — validate label/signal alignment 
+
+
+print("DIAGNOSTIC: label-signal alignment check")
+
+
+# 1) Array length consistency
+assert len(train_scalograms)     == len(train_segment_labels), "MISMATCH: train scalograms vs labels"
+assert len(val_scalograms)       == len(val_segment_labels),   "MISMATCH: val scalograms vs labels"
+assert len(test_scalograms)      == len(test_segment_labels),  "MISMATCH: test scalograms vs labels"
+print("Length check PASSED — scalograms and label arrays are same length")
+
+
+
+# 2) Label encoding sanity: unique string labels should be A/F/C only
+unique_train = set(train_segment_labels)
+unique_val   = set(val_segment_labels)
+unique_test  = set(test_segment_labels)
+print(f"Unique labels  train: {sorted(unique_train)}")
+print(f"Unique labels  val:   {sorted(unique_val)}")
+print(f"Unique labels  test:  {sorted(unique_test)}")
+assert unique_train <= {"A", "F", "C"}, "Unexpected label values in train"
+assert unique_val   <= {"A", "F", "C"}, "Unexpected label values in val"
+assert unique_test  <= {"A", "F", "C"}, "Unexpected label values in test"
+print("Label value check PASSED")
+
+
+
+# 3) Class distribution — verify fix: FTD must be present in val
+from collections import Counter
+c_train = Counter(train_segment_labels)
+c_val   = Counter(val_segment_labels)
+c_test  = Counter(test_segment_labels)
+print(f"\nClass distribution (segments):")
+print(f"  Train  A={c_train['A']}  F={c_train['F']}  C={c_train['C']}  "
+      f"  ratios A={c_train['A']/len(train_segment_labels)*100:.1f}%"
+      f" F={c_train['F']/len(train_segment_labels)*100:.1f}%"
+      f" C={c_train['C']/len(train_segment_labels)*100:.1f}%")
+print(f"  Val    A={c_val['A']}  F={c_val['F']}  C={c_val['C']}  "
+      f"  ratios A={c_val['A']/len(val_segment_labels)*100:.1f}%"
+      f" F={c_val['F']/len(val_segment_labels)*100:.1f}%"
+      f" C={c_val['C']/len(val_segment_labels)*100:.1f}%")
+print(f"  Test   A={c_test['A']}  F={c_test['F']}  C={c_test['C']}  "
+      f"  ratios A={c_test['A']/len(test_segment_labels)*100:.1f}%"
+      f" F={c_test['F']/len(test_segment_labels)*100:.1f}%"
+      f" C={c_test['C']/len(test_segment_labels)*100:.1f}%")
+
+if c_val['F'] < 5:
+    print("WARNING: val has very few FTD segments — .isin() fix may NOT have been applied correctly")
+else:
+    print("FTD in val check PASSED")
+
+
+
+# 4) No NaN or Inf in scalograms
+for name, arr in [("train", train_scalograms), ("val", val_scalograms), ("test", test_scalograms)]:
+    n_nan = int(np.isnan(arr).sum())
+    n_inf = int(np.isinf(arr).sum())
+    print(f"  {name}: NaN={n_nan}  Inf={n_inf}")
+    assert n_nan == 0, f"NaN values in {name}_scalograms"
+    assert n_inf == 0, f"Inf values in {name}_scalograms"
+print("NaN/Inf check PASSED")
+
+
+
+# 5) Scalogram value range sanity (log10 compressed, values should be > 0 and < ~10)
+print(f"\nScalogram value ranges:")
+for name, arr in [("train", train_scalograms), ("val", val_scalograms), ("test", test_scalograms)]:
+    print(f"  {name}: min={arr.min():.4f}  max={arr.max():.4f}  mean={arr.mean():.4f}")
+
+
+
+# 6) Spot-check: first segment of each class in train — label must match segment_id's known class
+label_map_check = {"A": 0, "F": 1, "C": 2}
+train_labels_check = np.array([label_map_check[l] for l in train_segment_labels], dtype=np.int64)
+val_labels_check   = np.array([label_map_check[l] for l in val_segment_labels],   dtype=np.int64)
+test_labels_check  = np.array([label_map_check[l] for l in test_segment_labels],  dtype=np.int64)
+
+print(f"\nFirst 10 train labels (string): {list(train_segment_labels[:10])}")
+print(f"First 10 train labels (int):    {list(train_labels_check[:10])}")
+print(f"First 10 train subject IDs:     {list(train_segment_ids[:10])}")
+
+
+
+# 7) No subject appears in more than one split
+train_id_set = set(train_segment_ids)
+val_id_set   = set(val_segment_ids)
+test_id_set  = set(test_segment_ids)
+tv = train_id_set & val_id_set
+tt = train_id_set & test_id_set
+vt = val_id_set   & test_id_set
+print(f"\nData leakage check:")
+print(f"  Train ∩ Val:  {tv if tv else 'none'}")
+print(f"  Train ∩ Test: {tt if tt else 'none'}")
+print(f"  Val ∩ Test:   {vt if vt else 'none'}")
+assert not tv and not tt and not vt, "DATA LEAKAGE DETECTED"
+print("Data leakage check PASSED")
+
+print("\nAll diagnostics PASSED — proceed to training")
+print("=" * 60)
+
+
+
+
+#%% 7) Model training and evaluation
 
 
 import torch
@@ -742,11 +853,11 @@ print(f"Device: {device}")
 
 
 # ----Hyperparameters
-lr           = 0.001
-batch_size   = 8
+lr           = 0.0001
+batch_size   = 10
 epochs       = 200
-dropout      = 0.1
-weight_decay = 0.01
+dropout      = 0
+weight_decay = 0
 # momentum
 # label_smoothing
 
@@ -771,164 +882,111 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-# ----Model: EfficientNet from scratch
-"""
-Accepts (batch, in_channels, H, W) for any spatial size via AdaptiveAvgPool2d
-Width=1.2, Depth=1.4 multipliers over EfficientNet-B0 base
-"""
+#----Model definition _________________Custom CNN as an AlexNet variant______________________
 
 
-# Function definition 1
-class SEBlock(nn.Module):
-    """Squeeze-and-Excitation attention block"""
-    def __init__(self, channels, squeeze_channels):
-        super().__init__()
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels, squeeze_channels, 1, bias=True),
-            nn.SiLU(),
-            nn.Conv2d(squeeze_channels, channels, 1, bias=True),
-            nn.Sigmoid(),
-        )
+class EEGCNN(nn.Module):
+    def __init__(self, dropout=dropout, num_classes=3):
+        super(EEGCNN, self).__init__()
 
-    def forward(self, x):
-        return x * self.se(x)                      # channel-wise attention
+        # Input data shape: [Batch size, 19, 60, 3000] -> [Batch size, 96, 27, 1495]
+        self.conv1 = nn.Conv2d(19, 96, kernel_size=(7, 11), stride=(2, 2))
+        self.relu1 = nn.SiLU()
+        self.bn1   = nn.BatchNorm2d(96)
 
+        # [B, 96, 27, 1495] -> [B, 96, 27, 748]
+        self.conv1b = nn.Conv2d(96, 96, kernel_size=(3, 5), stride=(1, 2), padding=(1, 2))
+        self.relu1b = nn.SiLU()
+        self.bn1b   = nn.BatchNorm2d(96)
 
+        # [B, 96, 27, 748] -> [B, 96, 13, 373]
+        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2)
 
-# Function definition 2
-class MBConv(nn.Module):
-    """Mobile inverted bottleneck: depthwise separable conv + SE + SiLU + stochastic depth"""
-    
-    def __init__(self, in_ch, out_ch, kernel_size, stride, expand_ratio, se_ratio=0.25, sd_prob=0.0):
-        super().__init__()
-        mid_ch        = in_ch * expand_ratio
-        self.use_skip = (stride == 1 and in_ch == out_ch)
-        self.sd_prob  = sd_prob
+        # [B, 96, 13, 373] -> [B, 256, 13, 373]
+        self.conv2 = nn.Conv2d(96, 256, kernel_size=5, padding=2)
+        self.relu2 = nn.SiLU()
+        self.bn2   = nn.BatchNorm2d(256)
 
-        layers = []
-        if expand_ratio != 1:                                  # expansion phase (skipped in stage 1)
-            layers += [nn.Conv2d(in_ch, mid_ch, 1, bias=False),
-                       nn.BatchNorm2d(mid_ch, momentum=0.01, eps=1e-3),
-                       nn.SiLU()]
-        layers += [
-            nn.Conv2d(mid_ch, mid_ch, kernel_size, stride=stride,
-                      padding=kernel_size // 2, groups=mid_ch, bias=False),   # depthwise
-            nn.BatchNorm2d(mid_ch, momentum=0.01, eps=1e-3),
-            nn.SiLU(),
-            SEBlock(mid_ch, max(1, int(in_ch * se_ratio))),    # squeeze dim uses in_ch
-            nn.Conv2d(mid_ch, out_ch, 1, bias=False),          # pointwise projection
-            nn.BatchNorm2d(out_ch, momentum=0.01, eps=1e-3),
-        ]
-        self.block = nn.Sequential(*layers)
+        # [B, 256, 13, 373] -> [B, 256, 6, 186]
+        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2)
 
-    def forward(self, x):
-        out = self.block(x)
-        if self.use_skip:
-            if self.training and self.sd_prob > 0.0:           # stochastic depth: drop residual randomly
-                keep = torch.rand(x.shape[0], 1, 1, 1, device=x.device) > self.sd_prob
-                out  = out * keep.float()
-            return x + out
-        return out
+        # [B, 256, 6, 186] -> [B, 384, 6, 186]
+        self.conv3 = nn.Conv2d(256, 384, kernel_size=3, padding=1)
+        self.relu3 = nn.SiLU()
 
+        # [B, 384, 6, 186] -> [B, 384, 6, 186]
+        self.conv4 = nn.Conv2d(384, 384, kernel_size=3, padding=1)
+        self.relu4 = nn.SiLU()
 
+        # [B, 384, 6, 186] -> [B, 256, 6, 186]
+        self.conv5 = nn.Conv2d(384, 256, kernel_size=3, padding=1)
+        self.relu5 = nn.SiLU()
 
-
-
-# Model definition
-class EfficientNetB0(nn.Module):
-    def __init__(self, in_channels=19, num_classes=3, dropout=dropout):
-        super().__init__()
-        w, d = 1.2, 1.4                                        
-
-        def round_ch(c, div=8):                                
-            new_c = max(div, int(c + div / 2) // div * div)
-            if new_c < 0.9 * c:
-                new_c += div
-            return new_c
-
-        stem_ch = round_ch(32 * w)                             
-        self.stem = nn.Sequential(
-            nn.Conv2d(in_channels, stem_ch, 3, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(stem_ch, momentum=0.01, eps=1e-3),
-            nn.SiLU(),
-        )
-
-        # (expand_ratio, base_out_ch, kernel_size, stride, base_num_layers)
-        stage_cfg = [
-            (1,  16,  3, 1, 1),
-            (6,  24,  3, 2, 2),
-            (6,  40,  5, 2, 2),
-            (6,  80,  3, 2, 3),
-            (6, 112,  5, 1, 3),
-            (6, 192,  5, 2, 4),
-            (6, 320,  3, 1, 1),
-        ]
-
-        total_blocks = sum(max(1, int(np.ceil(n * d))) for *_, n in stage_cfg)
-        block_count  = 0
-        in_ch        = stem_ch
-        blocks       = []
-
-        for expand, base_out, k, stride, base_n in stage_cfg:
-            out_ch = round_ch(base_out * w)
-            n      = max(1, int(np.ceil(base_n * d)))
-            for i in range(n):
-                sd_prob = 0.2 * block_count / total_blocks     # linear stochastic depth schedule
-                blocks.append(
-                    MBConv(in_ch, out_ch, k, stride if i == 0 else 1, expand, sd_prob=sd_prob)
-                )
-                in_ch        = out_ch
-                block_count += 1
-
-        self.blocks = nn.Sequential(*blocks)
-
-        head_ch = round_ch(1280 * w)                           
-        self.head = nn.Sequential(
-            nn.Conv2d(in_ch, head_ch, 1, bias=False),
-            nn.BatchNorm2d(head_ch, momentum=0.01, eps=1e-3),
-            nn.SiLU(),
-        )
-
-        # Adaptive average pooling - works with any spatial size 
-        self.pool       = nn.AdaptiveAvgPool2d(1)           
-        self.classifier = nn.Sequential(
-            nn.Dropout(p=dropout),
-            nn.Linear(head_ch, num_classes),
-        )
         
-        
-        # fan_in mode preserves forward-pass variance; more appropriate than fan_out for SiLU
-        # (SiLU has ~0.5 derivative at 0, unlike ReLU's 1.0 assumed by fan_out)
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_in")
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.Linear):
-                nn.init.normal_(m.weight, 0, 0.01)
-                nn.init.zeros_(m.bias)
+        # [B, 256, 6, 186] -> [B, 256, 2, 62]
+        self.pool5 = nn.MaxPool2d(kernel_size=3, stride=(2, 3))
+
+        self.flatten = nn.Flatten()  # 256 * 2 * 62 = 31744
+
+
+        # FC layers
+        self.fc1 = nn.Linear(256 * 2 * 62, 8192)
+        self.relu6 = nn.SiLU()
+        self.dropout1 = nn.Dropout(p=dropout)
+
+        self.fc_mid = nn.Linear(8192, 4096)
+        self.relu_mid = nn.SiLU()
+        self.dropout_mid = nn.Dropout(p=dropout)
+
+        self.fc2 = nn.Linear(4096, 512)
+        self.relu7 = nn.SiLU()
+        self.dropout2 = nn.Dropout(p=dropout)
+
+        # 3-class output
+        self.fc3 = nn.Linear(512, num_classes)
+
 
     def forward(self, x):
-        x = self.stem(x)
-        x = self.blocks(x)
-        x = self.head(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)
-        return self.classifier(x)
+        
+        x = self.bn1(self.relu1(self.conv1(x)))
+        x = self.bn1b(self.relu1b(self.conv1b(x)))
+        x = self.pool1(x)
+
+        x = self.bn2(self.relu2(self.conv2(x)))
+        x = self.pool2(x)
+
+        x = self.relu3(self.conv3(x))
+        x = self.relu4(self.conv4(x))
+        x = self.relu5(self.conv5(x))
+        x = self.pool5(x)
+
+        x = self.flatten(x)          # [B, 31744]
+
+
+        x = self.dropout1(self.relu6(self.fc1(x)))      # 31744 -> 8192
+        x = self.dropout_mid(self.relu_mid(self.fc_mid(x)))  # 8192 -> 4096
+        x = self.dropout2(self.relu7(self.fc2(x)))      # 4096 -> 512
+        x = self.fc3(x)                                  # 512 -> 3
+        
+        return x
 
 
 
-# Assign this model to use in the code
-model = EfficientNetB0(in_channels=n_channels, num_classes=3, dropout=dropout).to(device)
+model = EEGCNN().to(device)
 
 
 
-# ----Loss function, optimizer, and cosine LR scheduler
-criterion = nn.CrossEntropyLoss(label_smoothing=0.05)          # prevents logits from growing 
+# ----Loss and Optimizer
+
+
+class_counts = np.bincount(train_labels_int, minlength=3)
+class_weights = len(train_labels_int) / (3 * class_counts)
+class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+
+print("Class counts:", class_counts)
+print("Class weights:", class_weights.detach().cpu().numpy())
+
+criterion = nn.CrossEntropyLoss(weight=class_weights)
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -1000,8 +1058,6 @@ for epoch in range(epochs):
 
 
 
-
-# Training complete — evaluating with final weights
 
 
 
@@ -1094,6 +1150,194 @@ plt.title("ROC Curves (One-vs-Rest) - Validation")
 plt.legend(loc="lower right")
 plt.tight_layout()
 plt.show()
+
+
+
+
+#%% Optional 4: Diagnostic quick model for a health check
+
+
+
+import copy
+from collections import Counter
+
+def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1e-4):
+    if model_kwargs is None:
+        model_kwargs = {}
+
+    print("=" * 70)
+    print("QUICK MODEL HEALTH CHECK")
+    print("=" * 70)
+
+    # ------------------------------------------------------------
+    # 1) Tiny real-label memorization
+    # ------------------------------------------------------------
+    print("\n1) Tiny real-label memorization")
+
+    x_tiny = train_tensor[:tiny_n].to(device)
+    y_tiny = torch.tensor(train_labels_int[:tiny_n], dtype=torch.long).to(device)
+
+    print("Tiny labels:", y_tiny.detach().cpu().numpy())
+    print("Tiny label counts [A,F,C]:", np.bincount(y_tiny.detach().cpu().numpy(), minlength=3))
+
+    model_tiny = ModelClass(**model_kwargs).to(device)
+    criterion_diag = nn.CrossEntropyLoss()
+    optimizer_tiny = optim.Adam(model_tiny.parameters(), lr=lr_diag)
+
+    tiny_success = False
+
+    for epoch in range(100):
+        model_tiny.train()
+
+        optimizer_tiny.zero_grad()
+        outputs = model_tiny(x_tiny)
+        loss = criterion_diag(outputs, y_tiny)
+        loss.backward()
+        optimizer_tiny.step()
+
+        preds = outputs.argmax(dim=1)
+        acc = (preds == y_tiny).float().mean().item() * 100
+
+        if (epoch + 1) % 10 == 0 or acc == 100:
+            print(f"Epoch {epoch+1:03d} | Loss={loss.item():.4f} | Acc={acc:.2f}%")
+
+        if acc == 100:
+            tiny_success = True
+            break
+
+    # ------------------------------------------------------------
+    # 2) Tiny random-label memorization
+    # ------------------------------------------------------------
+    print("\n2) Tiny random-label memorization")
+
+    y_random = torch.randint(0, 3, size=(tiny_n,), dtype=torch.long).to(device)
+
+    print("Random labels:", y_random.detach().cpu().numpy())
+    print("Random label counts [A,F,C]:", np.bincount(y_random.detach().cpu().numpy(), minlength=3))
+
+    model_random = ModelClass(**model_kwargs).to(device)
+    optimizer_random = optim.Adam(model_random.parameters(), lr=lr_diag)
+
+    random_success = False
+
+    for epoch in range(150):
+        model_random.train()
+
+        optimizer_random.zero_grad()
+        outputs = model_random(x_tiny)
+        loss = criterion_diag(outputs, y_random)
+        loss.backward()
+        optimizer_random.step()
+
+        preds = outputs.argmax(dim=1)
+        acc = (preds == y_random).float().mean().item() * 100
+
+        if (epoch + 1) % 15 == 0 or acc == 100:
+            print(f"Epoch {epoch+1:03d} | Loss={loss.item():.4f} | Acc={acc:.2f}%")
+
+        if acc == 100:
+            random_success = True
+            break
+
+    # ------------------------------------------------------------
+    # 3) Initial batch logits check
+    # ------------------------------------------------------------
+    print("\n3) Initial batch logits/probabilities")
+
+    model_init = ModelClass(**model_kwargs).to(device)
+    model_init.train()
+
+    inputs, labels = next(iter(train_loader))
+    inputs = inputs.to(device)
+    labels = labels.to(device)
+
+    with torch.no_grad():
+        logits = model_init(inputs)
+        probs = torch.softmax(logits, dim=1)
+        preds = probs.argmax(dim=1)
+
+    print("Input min/max/mean/std:",
+          inputs.min().item(),
+          inputs.max().item(),
+          inputs.mean().item(),
+          inputs.std().item())
+
+    print("Logits min/max/mean/std:",
+          logits.min().item(),
+          logits.max().item(),
+          logits.mean().item(),
+          logits.std().item())
+
+    print("Labels:", labels.detach().cpu().numpy())
+    print("Initial preds:", preds.detach().cpu().numpy())
+    print("Initial mean probs:", probs.mean(dim=0).detach().cpu().numpy())
+    print("Initial prob std:", probs.std(dim=0).detach().cpu().numpy())
+
+    # ------------------------------------------------------------
+    # 4) One epoch full-train behavior
+    # ------------------------------------------------------------
+    print("\n4) One-epoch full-train behavior")
+
+    model_one = ModelClass(**model_kwargs).to(device)
+
+    class_counts = np.bincount(train_labels_int, minlength=3)
+    class_weights = len(train_labels_int) / (3 * class_counts)
+    class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
+
+    criterion_weighted = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer_one = optim.Adam(model_one.parameters(), lr=lr_diag)
+
+    model_one.train()
+    y_true_one = []
+    y_pred_one = []
+    running_loss = 0.0
+
+    for inputs, labels in train_loader:
+        inputs = inputs.to(device)
+        labels = labels.to(device)
+
+        optimizer_one.zero_grad()
+        outputs = model_one(inputs)
+        loss = criterion_weighted(outputs, labels)
+        loss.backward()
+        optimizer_one.step()
+
+        running_loss += loss.item()
+
+        preds = outputs.argmax(dim=1)
+        y_true_one.extend(labels.detach().cpu().numpy())
+        y_pred_one.extend(preds.detach().cpu().numpy())
+
+    one_epoch_acc = accuracy_score(y_true_one, y_pred_one) * 100
+    pred_counts = np.bincount(np.array(y_pred_one), minlength=3)
+
+    print(f"One-epoch train loss: {running_loss / len(train_loader):.4f}")
+    print(f"One-epoch train acc:  {one_epoch_acc:.2f}%")
+    print("One-epoch pred counts [A,F,C]:", pred_counts.tolist())
+
+    # ------------------------------------------------------------
+    # 5) Summary
+    # ------------------------------------------------------------
+    print("\n5) Summary")
+
+    print("Tiny real-label memorization:", "PASS" if tiny_success else "FAIL")
+    print("Tiny random-label memorization:", "PASS" if random_success else "FAIL")
+
+    if pred_counts[1] == 0 and pred_counts[2] == 0:
+        print("WARNING: one-epoch model already predicts only A.")
+    elif pred_counts.min() == 0:
+        print("WARNING: one-epoch model ignores at least one class.")
+    else:
+        print("Prediction diversity check: PASS")
+
+ 
+
+quick_model_health_check(
+    EEGCNN,
+    model_kwargs={"dropout": 0.0, "num_classes": 3},
+    tiny_n=16,
+    lr_diag=1e-4
+)
 
 
 
