@@ -180,7 +180,7 @@ plt.show()
 
 #%% 4.1) Frequency analyses for one channel
 
-signal = subject_signals[channel_name].to_numpy()*1000  # Volts to mV scale 
+signal = subject_signals[channel_name].to_numpy()*10000  # Volts to 0.1mV scale 
 fs = 500
 
 
@@ -265,7 +265,7 @@ plt.show()
 
 scales = np.linspace(11, 500, 60)  # from 1 Hz to 45 Hz , 60 frequencies
 
-coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+coefficients, cwt_frequencies = pywt.cwt(signal, scales, "cmor-1.0-1.0", sampling_period=1 / fs)
 log_coefficients = 10*np.log10(np.abs(coefficients) + 1)
 
 sort_index = np.argsort(cwt_frequencies)
@@ -289,6 +289,85 @@ plt.show()
 
 
 
+#%% 4.6) 20-seconds segmented plots
+
+
+
+signal_segment = signal[0:fs*20]
+time_segment = time_sec[0:fs*20]
+
+
+
+#  Time domain
+plt.figure(figsize=(57, 10))
+plt.plot(time_segment, signal_segment, linewidth=2)
+plt.title(f"Time series | {participant_id} | {channel_name}")
+plt.xlabel("Time (s)")
+plt.ylabel("Amplitude")
+plt.tight_layout()
+plt.show()
+
+
+
+# Frequency domain
+nperseg = 512
+noverlap = nperseg // 4
+freq_psd, psd = welch(signal_segment, fs=fs, nperseg=nperseg, noverlap=noverlap, window="hann")
+
+plt.figure(figsize=(15, 5))
+plt.plot(freq_psd, psd)
+plt.title(f"Periodogram (Welch PSD) | {participant_id} | {channel_name}")
+plt.xlabel("Frequency (Hz)")
+plt.ylabel("Power")
+plt.xlim(-1,45)  
+plt.tight_layout()
+plt.show()
+
+
+
+
+# TF 1: Spectrogram
+freq_stft, time_stft, zxx = stft(signal_segment, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap)
+
+plt.figure(figsize=(20, 15))
+plt.pcolormesh(time_stft, freq_stft, np.abs(zxx), shading="gouraud")
+plt.title(f"Spectrogram | {participant_id} | {channel_name}")
+plt.xlabel("Time (s)")
+plt.ylim(0,30)                     # display up to 30 Hz 
+plt.ylabel("Frequency (Hz)")
+plt.colorbar(label="Magnitude")
+plt.tight_layout()
+plt.show()
+
+
+
+
+# TF 2: Scalogram 
+coefficients, cwt_frequencies = pywt.cwt(signal_segment, scales, "cmor-1.0-1.0", sampling_period=1 / fs)
+log_coefficients = 10*np.log10(np.abs(coefficients) + 1)
+
+sort_index = np.argsort(cwt_frequencies)
+cwt_frequencies = cwt_frequencies[sort_index]
+log_coefficients = log_coefficients[sort_index]
+
+plt.figure(figsize=(20, 15))
+plt.imshow(
+    log_coefficients,
+    extent=[time_segment[0], time_segment[-1], cwt_frequencies[0], cwt_frequencies[-1]],
+    aspect="auto",
+    origin="lower",
+    cmap="viridis",
+)
+plt.title(f"Scalogram | {participant_id} | {channel_name}")
+plt.xlabel("Time (s)")
+plt.ylabel("Frequency (Hz)")
+plt.colorbar(label="Log10(Magnitude + 1)")
+plt.tight_layout()
+plt.show()
+
+
+
+
 #%% 5.1) Dataset preparation: Splitting and segmentation
 
 
@@ -307,8 +386,8 @@ Dataset splitting is handled by 2 steps:
 
 
 # 5.1) Set the segment (epoch) length
-segment_sec = 60
-segment_points = int(segment_sec * 500)                         # 60 sec * 500 Hz = 30000 points
+segment_sec = 20
+segment_points = int(segment_sec * 500)                         # 20 sec * 500 Hz = 10000 points
 n_channels = 19                                                 # 19 EEG channels
 
 
@@ -355,7 +434,7 @@ val_subject_ids, test_subject_ids, _, _ = train_test_split(
 
 # 5.3) Generate containers for segments in each split
 
-train_data_list = []                # will hold (30000, 19) segment signals
+train_data_list = []                # will hold (10000, 19) segment signals
 val_data_list = []
 test_data_list = []
 
@@ -418,12 +497,12 @@ for _, subject_row in eeg_df.iterrows():    # look for every row of this datafra
 
 
         # Extract 60*500 points in order
-        start = segment_index * segment_points   # index * 30000  (first index=0)
+        start = segment_index * segment_points   # index * 10000  (first index=0)
         end = start + segment_points
         segment = signals[start:end, :]          # extract this segment from subject's signals (all 19 channels)     
         
         
-        # shape of each segment: (30000, 19)
+        # shape of each segment: (10000, 19)
 
 
         # Append segment and metadata to the appropriate split
@@ -438,7 +517,7 @@ for _, subject_row in eeg_df.iterrows():    # look for every row of this datafra
 
 
 # 5.5) Convert lists to arrays (3D tensors)
-# (n_segments, 30000, 19)
+# (n_segments, 10000, 19)
 
 train_data = np.stack(train_data_list).astype(np.float32) if train_data_list else np.empty((0, segment_points, n_channels), dtype=np.float32)
 val_data   = np.stack(val_data_list).astype(np.float32)   if val_data_list   else np.empty((0, segment_points, n_channels), dtype=np.float32)
@@ -505,7 +584,7 @@ signal into uV range (approx +-150 uV), which is the standard EEG amplitude scal
 Multiply with 1*10^6 for -> uV scale
 Multiply with 1*10^3 for -> mV scale
 """
-scale_factor = 1000                                             
+scale_factor = 10000                                             
 train_data   = train_data * scale_factor
 val_data     = val_data   * scale_factor
 test_data    = test_data  * scale_factor
@@ -640,7 +719,7 @@ print("Saved Excel files to:", desktop)
 
 # CWT parameters 
 scales_cwt        = np.linspace(11, 500, 60)                    
-downsample_factor = 10                                         # downsample time axis: 30000 -> 3000
+downsample_factor = 10                                         # downsample time axis: 10000 -> 1000
 n_time_ds         = segment_points // downsample_factor        # time points after downsampling
 n_scales_cwt      = len(scales_cwt)                            # frequency bins
 
@@ -650,7 +729,7 @@ def extract_cwt_scalogram(signal_1d, scales, fs=fs, downsample=downsample_factor
 
     # Apply CWT on a single-channel signal 
     
-    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-4.0-1.0", sampling_period=1 / fs)
+    coefficients, _ = pywt.cwt(signal_1d, scales, "cmor-1.0-1.0", sampling_period=1 / fs)
     log_coefficients = 10*np.log10(np.abs(coefficients) + 1)  
     
     return log_coefficients[:, ::downsample].astype(np.float32) 
@@ -706,7 +785,7 @@ BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.
 WORKSPACE_DIR = BASE_DIR.parent if BASE_DIR.name == "EEG_FTD_Alzheimer" else BASE_DIR
 
 
-"""
+
 # Optional: save to disk to skip recomputation next time
 np.save(BASE_DIR / "train_scalograms.npy",     train_scalograms)
 np.save(BASE_DIR / "val_scalograms.npy",       val_scalograms)
@@ -714,9 +793,9 @@ np.save(BASE_DIR / "test_scalograms.npy",      test_scalograms)
 np.save(BASE_DIR / "train_segment_labels.npy", train_segment_labels)
 np.save(BASE_DIR / "val_segment_labels.npy",   val_segment_labels)
 np.save(BASE_DIR / "test_segment_labels.npy",  test_segment_labels)
+
+
 """
-
-
 # Optional: load from disk (also restores label arrays needed for cell 7)
 train_scalograms      = np.load(BASE_DIR / "train_scalograms.npy")
 val_scalograms        = np.load(BASE_DIR / "val_scalograms.npy")
@@ -724,7 +803,7 @@ test_scalograms       = np.load(BASE_DIR / "test_scalograms.npy")
 train_segment_labels  = np.load(BASE_DIR / "train_segment_labels.npy", allow_pickle=True)
 val_segment_labels    = np.load(BASE_DIR / "val_segment_labels.npy",   allow_pickle=True)
 test_segment_labels   = np.load(BASE_DIR / "test_segment_labels.npy",  allow_pickle=True)
-
+"""
 
 
 
@@ -827,7 +906,6 @@ assert not tv and not tt and not vt, "DATA LEAKAGE DETECTED"
 print("Data leakage check PASSED")
 
 print("\nAll diagnostics PASSED — proceed to training")
-print("=" * 60)
 
 
 
@@ -854,10 +932,10 @@ print(f"Device: {device}")
 
 # ----Hyperparameters
 lr           = 0.0001
-batch_size   = 10
+batch_size   = 8
 epochs       = 200
-dropout      = 0
-weight_decay = 0
+dropout      = 0.2
+weight_decay = 0.0005
 # momentum
 # label_smoothing
 
@@ -882,93 +960,161 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-#----Model definition _________________Custom CNN as an AlexNet variant______________________
+#----Model definition: Custom CNN as an AlexNet variant
 
 
 class EEGCNN(nn.Module):
     def __init__(self, dropout=dropout, num_classes=3):
         super(EEGCNN, self).__init__()
 
-        # Input data shape: [Batch size, 19, 60, 3000] -> [Batch size, 96, 27, 1495]
-        self.conv1 = nn.Conv2d(19, 96, kernel_size=(7, 11), stride=(2, 2))
+        # Input: [B, 19, 60, 1000] -> [B, 64, 54, 500]
+        self.conv1 = nn.Conv2d(
+            in_channels=19,
+            out_channels=64,
+            kernel_size=(7, 7),
+            stride=(1, 2),
+            padding=(0, 3),
+        )
         self.relu1 = nn.SiLU()
-        self.bn1   = nn.BatchNorm2d(96)
+        self.bn1 = nn.BatchNorm2d(64)
 
-        # [B, 96, 27, 1495] -> [B, 96, 27, 748]
-        self.conv1b = nn.Conv2d(96, 96, kernel_size=(3, 5), stride=(1, 2), padding=(1, 2))
+        # [B, 64, 54, 500] -> [B, 64, 54, 250]
+        self.conv1b = nn.Conv2d(
+            in_channels=64,
+            out_channels=64,
+            kernel_size=(3, 5),
+            stride=(1, 2),
+            padding=(1, 2),
+        )
         self.relu1b = nn.SiLU()
-        self.bn1b   = nn.BatchNorm2d(96)
+        self.bn1b = nn.BatchNorm2d(64)
 
-        # [B, 96, 27, 748] -> [B, 96, 13, 373]
-        self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2)
+        # [B, 64, 54, 250] -> [B, 64, 27, 125]
+        self.pool1 = nn.MaxPool2d(
+            kernel_size=(2, 2),
+            stride=(2, 2),
+        )
 
-        # [B, 96, 13, 373] -> [B, 256, 13, 373]
-        self.conv2 = nn.Conv2d(96, 256, kernel_size=5, padding=2)
+        # [B, 64, 27, 125] -> [B, 128, 27, 125]
+        self.conv2 = nn.Conv2d(
+            in_channels=64,
+            out_channels=128,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+        )
         self.relu2 = nn.SiLU()
-        self.bn2   = nn.BatchNorm2d(256)
+        self.bn2 = nn.BatchNorm2d(128)
 
-        # [B, 256, 13, 373] -> [B, 256, 6, 186]
-        self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2)
+        # [B, 128, 27, 125] -> [B, 128, 13, 62]
+        self.pool2 = nn.MaxPool2d(
+            kernel_size=(2, 2),
+            stride=(2, 2),
+        )
 
-        # [B, 256, 6, 186] -> [B, 384, 6, 186]
-        self.conv3 = nn.Conv2d(256, 384, kernel_size=3, padding=1)
+        # [B, 128, 13, 62] -> [B, 192, 13, 62]
+        self.conv3 = nn.Conv2d(
+            in_channels=128,
+            out_channels=192,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+        )
         self.relu3 = nn.SiLU()
+        self.bn3 = nn.BatchNorm2d(192)
 
-        # [B, 384, 6, 186] -> [B, 384, 6, 186]
-        self.conv4 = nn.Conv2d(384, 384, kernel_size=3, padding=1)
+        # [B, 192, 13, 62] -> [B, 192, 13, 62]
+        self.conv4 = nn.Conv2d(
+            in_channels=192,
+            out_channels=192,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+        )
         self.relu4 = nn.SiLU()
+        self.bn4 = nn.BatchNorm2d(192)
 
-        # [B, 384, 6, 186] -> [B, 256, 6, 186]
-        self.conv5 = nn.Conv2d(384, 256, kernel_size=3, padding=1)
+        # [B, 192, 13, 62] -> [B, 192, 13, 62]
+        self.conv5 = nn.Conv2d(
+            in_channels=192,
+            out_channels=192,
+            kernel_size=(3, 3),
+            stride=(1, 1),
+            padding=(1, 1),
+        )
         self.relu5 = nn.SiLU()
+        self.bn5 = nn.BatchNorm2d(192)
 
-        
-        # [B, 256, 6, 186] -> [B, 256, 2, 62]
-        self.pool5 = nn.MaxPool2d(kernel_size=3, stride=(2, 3))
+        # [B, 192, 13, 62] -> [B, 192, 6, 20]
+        self.pool5 = nn.MaxPool2d(
+            kernel_size=(3, 3),
+            stride=(2, 3),
+        )
 
-        self.flatten = nn.Flatten()  # 256 * 2 * 62 = 31744
-
+        self.flatten = nn.Flatten()  # 192 * 6 * 20 = 23040
 
         # FC layers
-        self.fc1 = nn.Linear(256 * 2 * 62, 8192)
+        self.fc1 = nn.Linear(192 * 6 * 20, 2048)
         self.relu6 = nn.SiLU()
         self.dropout1 = nn.Dropout(p=dropout)
 
-        self.fc_mid = nn.Linear(8192, 4096)
+        self.fc_mid = nn.Linear(2048, 512)
         self.relu_mid = nn.SiLU()
         self.dropout_mid = nn.Dropout(p=dropout)
 
-        self.fc2 = nn.Linear(4096, 512)
+        self.fc2 = nn.Linear(512, 128)
         self.relu7 = nn.SiLU()
         self.dropout2 = nn.Dropout(p=dropout)
 
-        # 3-class output
-        self.fc3 = nn.Linear(512, num_classes)
-
+        self.fc3 = nn.Linear(128, num_classes)
 
     def forward(self, x):
-        
+
+        # [B, 19, 60, 1000] -> [B, 64, 54, 500]
         x = self.bn1(self.relu1(self.conv1(x)))
+
+        # [B, 64, 54, 500] -> [B, 64, 54, 250]
         x = self.bn1b(self.relu1b(self.conv1b(x)))
+
+        # [B, 64, 54, 250] -> [B, 64, 27, 125]
         x = self.pool1(x)
 
+        # [B, 64, 27, 125] -> [B, 128, 27, 125]
         x = self.bn2(self.relu2(self.conv2(x)))
+
+        # [B, 128, 27, 125] -> [B, 128, 13, 62]
         x = self.pool2(x)
 
-        x = self.relu3(self.conv3(x))
-        x = self.relu4(self.conv4(x))
-        x = self.relu5(self.conv5(x))
+        # [B, 128, 13, 62] -> [B, 192, 13, 62]
+        x = self.bn3(self.relu3(self.conv3(x)))
+
+        # [B, 192, 13, 62] -> [B, 192, 13, 62]
+        x = self.bn4(self.relu4(self.conv4(x)))
+
+        # [B, 192, 13, 62] -> [B, 192, 13, 62]
+        x = self.bn5(self.relu5(self.conv5(x)))
+
+        # [B, 192, 13, 62] -> [B, 192, 6, 20]
         x = self.pool5(x)
 
-        x = self.flatten(x)          # [B, 31744]
+        # [B, 192, 6, 20] -> [B, 23040]
+        x = self.flatten(x)
 
+        # [B, 23040] -> [B, 2048]
+        x = self.dropout1(self.relu6(self.fc1(x)))
 
-        x = self.dropout1(self.relu6(self.fc1(x)))      # 31744 -> 8192
-        x = self.dropout_mid(self.relu_mid(self.fc_mid(x)))  # 8192 -> 4096
-        x = self.dropout2(self.relu7(self.fc2(x)))      # 4096 -> 512
-        x = self.fc3(x)                                  # 512 -> 3
-        
+        # [B, 2048] -> [B, 512]
+        x = self.dropout_mid(self.relu_mid(self.fc_mid(x)))
+
+        # [B, 512] -> [B, 128]
+        x = self.dropout2(self.relu7(self.fc2(x)))
+
+        # [B, 128] -> [B, 3]
+        x = self.fc3(x)
+
         return x
+
+
 
 
 
@@ -986,7 +1132,8 @@ class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
 print("Class counts:", class_counts)
 print("Class weights:", class_weights.detach().cpu().numpy())
 
-criterion = nn.CrossEntropyLoss(weight=class_weights)
+criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.01)
+
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -1015,7 +1162,7 @@ for epoch in range(epochs):
         outputs = model(inputs)
         loss    = criterion(outputs, labels)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         # Gradient clipping: prevent gradient spikes
 
         optimizer.step()
@@ -1169,9 +1316,10 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
     print("QUICK MODEL HEALTH CHECK")
     print("=" * 70)
 
-    # ------------------------------------------------------------
+    
+
     # 1) Tiny real-label memorization
-    # ------------------------------------------------------------
+    
     print("\n1) Tiny real-label memorization")
 
     x_tiny = train_tensor[:tiny_n].to(device)
@@ -1205,9 +1353,11 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
             tiny_success = True
             break
 
-    # ------------------------------------------------------------
+
+
+    
     # 2) Tiny random-label memorization
-    # ------------------------------------------------------------
+    
     print("\n2) Tiny random-label memorization")
 
     y_random = torch.randint(0, 3, size=(tiny_n,), dtype=torch.long).to(device)
@@ -1239,9 +1389,10 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
             random_success = True
             break
 
-    # ------------------------------------------------------------
+    
+
     # 3) Initial batch logits check
-    # ------------------------------------------------------------
+    
     print("\n3) Initial batch logits/probabilities")
 
     model_init = ModelClass(**model_kwargs).to(device)
@@ -1273,9 +1424,10 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
     print("Initial mean probs:", probs.mean(dim=0).detach().cpu().numpy())
     print("Initial prob std:", probs.std(dim=0).detach().cpu().numpy())
 
-    # ------------------------------------------------------------
+    
+
     # 4) One epoch full-train behavior
-    # ------------------------------------------------------------
+    
     print("\n4) One-epoch full-train behavior")
 
     model_one = ModelClass(**model_kwargs).to(device)
@@ -1315,9 +1467,10 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
     print(f"One-epoch train acc:  {one_epoch_acc:.2f}%")
     print("One-epoch pred counts [A,F,C]:", pred_counts.tolist())
 
-    # ------------------------------------------------------------
+    
+
     # 5) Summary
-    # ------------------------------------------------------------
+    
     print("\n5) Summary")
 
     print("Tiny real-label memorization:", "PASS" if tiny_success else "FAIL")
@@ -1338,6 +1491,7 @@ quick_model_health_check(
     tiny_n=16,
     lr_diag=1e-4
 )
+
 
 
 
@@ -1392,6 +1546,7 @@ plt.tight_layout()
 plt.show()
 
 
+
 # Test ROC curves
 y_true_test_bin = label_binarize(y_true_test, classes=[0, 1, 2])
 
@@ -1420,7 +1575,9 @@ model.load_state_dict(best_model_state)
 """
 
 
+
 #%% 9) Subject-level test evaluation (using cell 8 outputs)
+
 
 # Safety check
 print("len(y_true_test):     ", len(y_true_test))
