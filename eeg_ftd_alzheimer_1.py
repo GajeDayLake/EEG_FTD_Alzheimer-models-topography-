@@ -785,7 +785,7 @@ BASE_DIR = Path(__file__).resolve().parent if "__file__" in globals() else Path.
 WORKSPACE_DIR = BASE_DIR.parent if BASE_DIR.name == "EEG_FTD_Alzheimer" else BASE_DIR
 
 
-
+"""
 # Optional: save to disk to skip recomputation next time
 np.save(BASE_DIR / "train_scalograms.npy",     train_scalograms)
 np.save(BASE_DIR / "val_scalograms.npy",       val_scalograms)
@@ -793,9 +793,10 @@ np.save(BASE_DIR / "test_scalograms.npy",      test_scalograms)
 np.save(BASE_DIR / "train_segment_labels.npy", train_segment_labels)
 np.save(BASE_DIR / "val_segment_labels.npy",   val_segment_labels)
 np.save(BASE_DIR / "test_segment_labels.npy",  test_segment_labels)
-
-
+np.save(BASE_DIR / "test_segment_ids.npy",  test_segment_ids)
 """
+
+
 # Optional: load from disk (also restores label arrays needed for cell 7)
 train_scalograms      = np.load(BASE_DIR / "train_scalograms.npy")
 val_scalograms        = np.load(BASE_DIR / "val_scalograms.npy")
@@ -803,7 +804,7 @@ test_scalograms       = np.load(BASE_DIR / "test_scalograms.npy")
 train_segment_labels  = np.load(BASE_DIR / "train_segment_labels.npy", allow_pickle=True)
 val_segment_labels    = np.load(BASE_DIR / "val_segment_labels.npy",   allow_pickle=True)
 test_segment_labels   = np.load(BASE_DIR / "test_segment_labels.npy",  allow_pickle=True)
-"""
+test_segment_ids   = np.load(BASE_DIR / "test_segment_ids.npy",  allow_pickle=True)
 
 
 
@@ -960,165 +961,42 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-#----Model definition: Custom CNN as an AlexNet variant
+#----Model definition: EfficientNet-B0 adapted for 19-channel EEG scalograms
+# Input:  [B, 19, 60, 1000]
+# Output: [B, num_classes]
+# Only two layers are modified from the standard EfficientNet-B0:
+#   1) features[0][0]: first Conv2d  3 -> 19 input channels
+#   2) classifier[1]: final Linear 1280 -> num_classes
+# AdaptiveAvgPool2d in the backbone handles the non-square [60, 1000] input natively.
+# ~5.3M parameters -- roughly 10x fewer than the previous EEGCNN.
+
+from torchvision.models import efficientnet_b0
 
 
-class EEGCNN(nn.Module):
+class EEGEfficientNet(nn.Module):
     def __init__(self, dropout=dropout, num_classes=3):
-        super(EEGCNN, self).__init__()
+        super().__init__()
+        self.net = efficientnet_b0(weights=None)
 
-        # Input: [B, 19, 60, 1000] -> [B, 64, 54, 500]
-        self.conv1 = nn.Conv2d(
-            in_channels=19,
-            out_channels=64,
-            kernel_size=(7, 7),
-            stride=(1, 2),
-            padding=(0, 3),
-        )
-        self.relu1 = nn.SiLU()
-        self.bn1 = nn.BatchNorm2d(64)
-
-        # [B, 64, 54, 500] -> [B, 64, 54, 250]
-        self.conv1b = nn.Conv2d(
-            in_channels=64,
-            out_channels=64,
-            kernel_size=(3, 5),
-            stride=(1, 2),
-            padding=(1, 2),
-        )
-        self.relu1b = nn.SiLU()
-        self.bn1b = nn.BatchNorm2d(64)
-
-        # [B, 64, 54, 250] -> [B, 64, 27, 125]
-        self.pool1 = nn.MaxPool2d(
-            kernel_size=(2, 2),
-            stride=(2, 2),
+        # Replace first conv: 3 -> 19 input channels (stride, padding, bias unchanged)
+        self.net.features[0][0] = nn.Conv2d(
+            19, 32, kernel_size=3, stride=2, padding=1, bias=False
         )
 
-        # [B, 64, 27, 125] -> [B, 128, 27, 125]
-        self.conv2 = nn.Conv2d(
-            in_channels=64,
-            out_channels=128,
-            kernel_size=(3, 3),
-            stride=(1, 1),
-            padding=(1, 1),
-        )
-        self.relu2 = nn.SiLU()
-        self.bn2 = nn.BatchNorm2d(128)
+        # Set dropout rate to match the chosen hyperparameter
+        self.net.classifier[0] = nn.Dropout(p=dropout, inplace=True)
 
-        # [B, 128, 27, 125] -> [B, 128, 13, 62]
-        self.pool2 = nn.MaxPool2d(
-            kernel_size=(2, 2),
-            stride=(2, 2),
-        )
-
-        # [B, 128, 13, 62] -> [B, 192, 13, 62]
-        self.conv3 = nn.Conv2d(
-            in_channels=128,
-            out_channels=192,
-            kernel_size=(3, 3),
-            stride=(1, 1),
-            padding=(1, 1),
-        )
-        self.relu3 = nn.SiLU()
-        self.bn3 = nn.BatchNorm2d(192)
-
-        # [B, 192, 13, 62] -> [B, 192, 13, 62]
-        self.conv4 = nn.Conv2d(
-            in_channels=192,
-            out_channels=192,
-            kernel_size=(3, 3),
-            stride=(1, 1),
-            padding=(1, 1),
-        )
-        self.relu4 = nn.SiLU()
-        self.bn4 = nn.BatchNorm2d(192)
-
-        # [B, 192, 13, 62] -> [B, 192, 13, 62]
-        self.conv5 = nn.Conv2d(
-            in_channels=192,
-            out_channels=192,
-            kernel_size=(3, 3),
-            stride=(1, 1),
-            padding=(1, 1),
-        )
-        self.relu5 = nn.SiLU()
-        self.bn5 = nn.BatchNorm2d(192)
-
-        # [B, 192, 13, 62] -> [B, 192, 6, 20]
-        self.pool5 = nn.MaxPool2d(
-            kernel_size=(3, 3),
-            stride=(2, 3),
-        )
-
-        self.flatten = nn.Flatten()  # 192 * 6 * 20 = 23040
-
-        # FC layers
-        self.fc1 = nn.Linear(192 * 6 * 20, 2048)
-        self.relu6 = nn.SiLU()
-        self.dropout1 = nn.Dropout(p=dropout)
-
-        self.fc_mid = nn.Linear(2048, 512)
-        self.relu_mid = nn.SiLU()
-        self.dropout_mid = nn.Dropout(p=dropout)
-
-        self.fc2 = nn.Linear(512, 128)
-        self.relu7 = nn.SiLU()
-        self.dropout2 = nn.Dropout(p=dropout)
-
-        self.fc3 = nn.Linear(128, num_classes)
+        # Replace final linear: 1280 -> num_classes
+        in_features = self.net.classifier[1].in_features   # 1280
+        self.net.classifier[1] = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
-
-        # [B, 19, 60, 1000] -> [B, 64, 54, 500]
-        x = self.bn1(self.relu1(self.conv1(x)))
-
-        # [B, 64, 54, 500] -> [B, 64, 54, 250]
-        x = self.bn1b(self.relu1b(self.conv1b(x)))
-
-        # [B, 64, 54, 250] -> [B, 64, 27, 125]
-        x = self.pool1(x)
-
-        # [B, 64, 27, 125] -> [B, 128, 27, 125]
-        x = self.bn2(self.relu2(self.conv2(x)))
-
-        # [B, 128, 27, 125] -> [B, 128, 13, 62]
-        x = self.pool2(x)
-
-        # [B, 128, 13, 62] -> [B, 192, 13, 62]
-        x = self.bn3(self.relu3(self.conv3(x)))
-
-        # [B, 192, 13, 62] -> [B, 192, 13, 62]
-        x = self.bn4(self.relu4(self.conv4(x)))
-
-        # [B, 192, 13, 62] -> [B, 192, 13, 62]
-        x = self.bn5(self.relu5(self.conv5(x)))
-
-        # [B, 192, 13, 62] -> [B, 192, 6, 20]
-        x = self.pool5(x)
-
-        # [B, 192, 6, 20] -> [B, 23040]
-        x = self.flatten(x)
-
-        # [B, 23040] -> [B, 2048]
-        x = self.dropout1(self.relu6(self.fc1(x)))
-
-        # [B, 2048] -> [B, 512]
-        x = self.dropout_mid(self.relu_mid(self.fc_mid(x)))
-
-        # [B, 512] -> [B, 128]
-        x = self.dropout2(self.relu7(self.fc2(x)))
-
-        # [B, 128] -> [B, 3]
-        x = self.fc3(x)
-
-        return x
+        return self.net(x)
 
 
 
 
-
-model = EEGCNN().to(device)
+model = EEGEfficientNet().to(device)
 
 
 
@@ -1486,7 +1364,7 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
  
 
 quick_model_health_check(
-    EEGCNN,
+    EEGEfficientNet,
     model_kwargs={"dropout": 0.0, "num_classes": 3},
     tiny_n=16,
     lr_diag=1e-4
