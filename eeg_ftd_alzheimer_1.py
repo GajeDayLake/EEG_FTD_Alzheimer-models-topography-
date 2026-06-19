@@ -935,8 +935,8 @@ print(f"Device: {device}")
 lr           = 0.0001
 batch_size   = 8
 epochs       = 200
-dropout      = 0.2
-weight_decay = 0.0005
+dropout      = 0.4
+weight_decay = 0.01
 # momentum
 # label_smoothing
 
@@ -961,42 +961,103 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-#----Model definition: EfficientNet-B0 adapted for 19-channel EEG scalograms
+#----Model definition: Vision Transformer (ViT) for 19-channel EEG scalograms
 # Input:  [B, 19, 60, 1000]
 # Output: [B, num_classes]
-# Only two layers are modified from the standard EfficientNet-B0:
-#   1) features[0][0]: first Conv2d  3 -> 19 input channels
-#   2) classifier[1]: final Linear 1280 -> num_classes
-# AdaptiveAvgPool2d in the backbone handles the non-square [60, 1000] input natively.
-# ~5.3M parameters -- roughly 10x fewer than the previous EEGCNN.
+#
+# Patch strategy: (6, 50) -> 10 x 20 = 200 patches per sample
+# Each patch covers all 19 channels over 6 frequency bins x 50 time steps
+# -> patch_dim = 19 * 6 * 50 = 5700, projected to embed_dim = 192
+#
+# Architecture scale: DeiT-Tiny equivalent
+#   embed_dim=192, num_heads=6, num_layers=6, mlp_ratio=2  (~4.2M parameters)
+# Pre-LayerNorm (norm_first=True) for stable training from scratch.
+# Self-attention discovers cross-channel and long-range time-frequency
+# structure that CNNs with local receptive fields miss.
 
-from torchvision.models import efficientnet_b0
 
-
-class EEGEfficientNet(nn.Module):
-    def __init__(self, dropout=dropout, num_classes=3):
+class EEGViT(nn.Module):
+    def __init__(
+        self,
+        img_channels = 19,
+        freq_bins    = 60,
+        time_steps   = 1000,
+        patch_h      = 6,
+        patch_w      = 50,
+        embed_dim    = 192,
+        num_heads    = 6,
+        num_layers   = 4,
+        mlp_ratio    = 2,
+        dropout      = dropout,
+        num_classes  = 3,
+    ):
         super().__init__()
-        self.net = efficientnet_b0(weights=None)
 
-        # Replace first conv: 3 -> 19 input channels (stride, padding, bias unchanged)
-        self.net.features[0][0] = nn.Conv2d(
-            19, 32, kernel_size=3, stride=2, padding=1, bias=False
+        assert freq_bins % patch_h == 0 and time_steps % patch_w == 0, \
+            "freq_bins and time_steps must be divisible by patch_h and patch_w"
+
+        n_patches = (freq_bins // patch_h) * (time_steps // patch_w)  # 10 * 20 = 200
+        patch_dim = img_channels * patch_h * patch_w                   # 19 * 6 * 50 = 5700
+
+        # Patch embedding: flatten each patch -> embed_dim
+        self.patch_embed = nn.Linear(patch_dim, embed_dim)
+
+        # Learnable CLS token and positional embedding
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_patches + 1, embed_dim))
+        self.pos_drop  = nn.Dropout(p=dropout)
+
+        # Transformer encoder (Pre-LN, GELU activation)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model         = embed_dim,
+            nhead           = num_heads,
+            dim_feedforward = embed_dim * mlp_ratio,
+            dropout         = dropout,
+            activation      = "gelu",
+            batch_first     = True,
+            norm_first      = True,
         )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # Set dropout rate to match the chosen hyperparameter
-        self.net.classifier[0] = nn.Dropout(p=dropout, inplace=True)
+        # Classification head on CLS token
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, num_classes)
 
-        # Replace final linear: 1280 -> num_classes
-        in_features = self.net.classifier[1].in_features   # 1280
-        self.net.classifier[1] = nn.Linear(in_features, num_classes)
+        self.patch_h = patch_h
+        self.patch_w = patch_w
+
+        # Weight initialization
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
 
     def forward(self, x):
-        return self.net(x)
+        B, C, H, W = x.shape  # [B, 19, 60, 1000]
+        ph, pw = self.patch_h, self.patch_w
+
+        # Patchify: [B, C, H, W] -> [B, n_patches, patch_dim]
+        x = x.reshape(B, C, H // ph, ph, W // pw, pw)  # [B, C, nh, ph, nw, pw]
+        x = x.permute(0, 2, 4, 1, 3, 5)                # [B, nh, nw, C, ph, pw]
+        x = x.reshape(B, (H // ph) * (W // pw), C * ph * pw)  # [B, 200, 5700]
+
+        # Linear projection to embed_dim
+        x = self.patch_embed(x)  # [B, 200, 192]
+
+        # Prepend CLS token and add positional embedding
+        cls = self.cls_token.expand(B, -1, -1)
+        x   = torch.cat([cls, x], dim=1)   # [B, 201, 192]
+        x   = self.pos_drop(x + self.pos_embed)
+
+        # Transformer encoder
+        x = self.transformer(x)  # [B, 201, 192]
+
+        # CLS token -> classifier
+        x = self.norm(x[:, 0])   # [B, 192]
+        return self.head(x)      # [B, num_classes]
 
 
 
 
-model = EEGEfficientNet().to(device)
+model = EEGViT().to(device)
 
 
 
@@ -1010,7 +1071,7 @@ class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
 print("Class counts:", class_counts)
 print("Class weights:", class_weights.detach().cpu().numpy())
 
-criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.01)
+criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
 
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -1364,7 +1425,7 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
  
 
 quick_model_health_check(
-    EEGEfficientNet,
+    EEGViT,
     model_kwargs={"dropout": 0.0, "num_classes": 3},
     tiny_n=16,
     lr_diag=1e-4
