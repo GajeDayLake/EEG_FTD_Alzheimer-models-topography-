@@ -925,6 +925,8 @@ from sklearn.preprocessing import label_binarize
 import seaborn as sns
 
 
+
+
 print("CUDA available:", torch.cuda.is_available())
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device: {device}")
@@ -933,12 +935,14 @@ print(f"Device: {device}")
 
 
 # ----Hyperparameters
-lr           = 0.0001
+lr           = 0.00003
 batch_size   = 8
 epochs       = 150
-dropout      = 0.1
-weight_decay = 0.0001
+dropout      = 0.20
+weight_decay = 0.001
 label_smooth = 0.02
+grad_clip    = 2.0
+
 
 
 
@@ -950,71 +954,160 @@ test_labels_int  = np.array([label_map[l] for l in test_segment_labels],  dtype=
 
 
 
-#  Convert to tensors and build DataLoaders
+
+# Convert to tensors and build DataLoaders
 train_tensor = torch.tensor(train_scalograms, dtype=torch.float32)
 val_tensor   = torch.tensor(val_scalograms,   dtype=torch.float32)
 test_tensor  = torch.tensor(test_scalograms,  dtype=torch.float32)
 
-train_loader = DataLoader(TensorDataset(train_tensor, torch.tensor(train_labels_int)), batch_size=batch_size, shuffle=True)
-val_loader   = DataLoader(TensorDataset(val_tensor,   torch.tensor(val_labels_int)),   batch_size=batch_size, shuffle=False)
-test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_int)),  batch_size=batch_size, shuffle=False)
+train_loader = DataLoader(
+    TensorDataset(train_tensor, torch.tensor(train_labels_int)),
+    batch_size=batch_size,
+    shuffle=True
+)
+
+val_loader = DataLoader(
+    TensorDataset(val_tensor, torch.tensor(val_labels_int)),
+    batch_size=batch_size,
+    shuffle=False
+)
+
+test_loader = DataLoader(
+    TensorDataset(test_tensor, torch.tensor(test_labels_int)),
+    batch_size=batch_size,
+    shuffle=False
+)
 
 
 
-#---- Model definition: YOLO26-cls adapted for 19-channel EEG scalograms
 
-model_weights_cls = "yolo26s-cls.pt"   # swap variant: n/s/m/l/x
+# ---- Model definition: YOLO26-cls adapted for 19-channel EEG scalograms
+
+
+model_weights_cls = "yolo26m-cls.pt"
+
+
 
 
 class YOLO26CLS(nn.Module):
     """
-    YOLO26-cls backbone adapted for 19-channel EEG scalogram input (19, 60, 1000).
-    Loads pretrained weights, patches the first conv (3->19 ch) and
-    the final linear head (->num_classes).
+    YOLO26-cls backbone adapted for 19-channel EEG scalogram input: [B, 19, 60, 1000].
+
+    Main correction:
+    The first convolution is initialized from pretrained RGB weights instead of
+    being randomly initialized.
+
+    RGB pretrained conv:
+        [out_channels, 3, kh, kw]
+
+    EEG adapted conv:
+        [out_channels, 19, kh, kw]
     """
-    def __init__(self, weights=model_weights_cls, num_classes=3):
+
+    def __init__(self, weights=model_weights_cls, num_classes=3, dropout=0.20):
         super().__init__()
+
         _yolo = YOLO(weights)
         self.backbone = _yolo.model.float()
 
-        # Patch first conv: 3 -> 19 input channels (reinitialised weights)
+        
+        # Patch first conv: 3 RGB channels -> 19 EEG channels
+        # using pretrained RGB weights
+        
         first_conv = self.backbone.model[0].conv
-        self.backbone.model[0].conv = nn.Conv2d(
+
+        old_weight = first_conv.weight.data.clone()
+        old_bias_exists = first_conv.bias is not None
+
+        new_conv = nn.Conv2d(
             in_channels  = 19,
             out_channels = first_conv.out_channels,
             kernel_size  = first_conv.kernel_size,
             stride       = first_conv.stride,
             padding      = first_conv.padding,
-            bias         = first_conv.bias is not None,
+            dilation     = first_conv.dilation,
+            groups       = first_conv.groups,
+            bias         = old_bias_exists,
+            padding_mode = first_conv.padding_mode,
         )
 
-        # Patch classifier head: -> num_classes, always return raw logits
+        with torch.no_grad():
+            # old_weight: [out_channels, 3, kh, kw]
+
+            # Average pretrained RGB filters:
+            # [out_channels, 3, kh, kw] -> [out_channels, 1, kh, kw]
+            rgb_mean_weight = old_weight.mean(dim=1, keepdim=True)
+
+            # Repeat averaged filter to 19 EEG channels:
+            # [out_channels, 1, kh, kw] -> [out_channels, 19, kh, kw]
+            new_weight = rgb_mean_weight.repeat(1, 19, 1, 1)
+
+            # Preserve activation scale.
+            # Original conv sums 3 channels; new conv sums 19 channels.
+            new_weight = new_weight * (3.0 / 19.0)
+
+            new_conv.weight.copy_(new_weight)
+
+            if old_bias_exists:
+                new_conv.bias.copy_(first_conv.bias.data)
+
+        self.backbone.model[0].conv = new_conv
+
+        
+        # Patch classifier head: original classes -> 3 EEG classes
+        
         classify_head = self.backbone.model[-1]
+
         in_feats = classify_head.linear.in_features
         classify_head.linear = nn.Linear(in_feats, num_classes)
 
-        # Override Classify.forward to always return raw logits.
-        # Default Ultralytics behaviour: returns softmax in eval mode, which
-        # breaks CrossEntropyLoss. Closure captures _h so it works without self.
+        # Adjust classification dropout if available
+        if hasattr(classify_head, "drop"):
+            classify_head.drop.p = dropout
+
+        # Initialize only the new classifier layer
+        nn.init.kaiming_normal_(
+            classify_head.linear.weight,
+            mode="fan_in",
+            nonlinearity="relu"
+        )
+        nn.init.constant_(classify_head.linear.bias, 0)
+
+        
+        # Force raw logits output.
+        # Ultralytics classification models may return softmax in eval mode.
+        # CrossEntropyLoss requires raw logits.
+        
         _h = classify_head
+
         def _logits_forward(x):
             if isinstance(x, list):
                 x = torch.cat(x, 1)
             return _h.linear(_h.drop(_h.pool(_h.conv(x)).flatten(1)))
+
         classify_head.forward = _logits_forward
 
         del _yolo
 
     def forward(self, x):
         out = self.backbone(x)
-        # Some Ultralytics versions return (feats, logits) tuple; extract logits
+
+        # Some Ultralytics versions may return tuple/list.
+        # Extract logits safely.
         if isinstance(out, (tuple, list)):
             out = out[-1]
+
         return out
 
 
 
-model = YOLO26CLS(weights=model_weights_cls, num_classes=3).to(device)
+
+model = YOLO26CLS(
+    weights=model_weights_cls,
+    num_classes=3,
+    dropout=dropout
+).to(device)
+
 
 
 
@@ -1028,19 +1121,34 @@ class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
 print("Class counts:", class_counts)
 print("Class weights:", class_weights.detach().cpu().numpy())
 
-criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing= label_smooth)
 
-optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
-scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+criterion = nn.CrossEntropyLoss(
+    weight=class_weights,
+    label_smoothing=label_smooth
+)
+
+
+optimizer = optim.AdamW(
+    model.parameters(),
+    lr=lr,
+    weight_decay=weight_decay
+)
+
+
+scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    optimizer,
+    T_max=epochs
+)
 
 
 
 
-#  Training and validation loop
+# Training and validation loop
 train_losses     = []
 val_losses       = []
 train_accuracies = []
 val_accuracies   = []
+
 
 
 
@@ -1054,22 +1162,31 @@ for epoch in range(epochs):
 
     for inputs, labels in train_loader:
         inputs, labels = inputs.to(device), labels.to(device)
+
         optimizer.zero_grad()
+
         outputs = model(inputs)
         loss    = criterion(outputs, labels)
+
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-        # Gradient clipping: prevent gradient spikes
+
+        torch.nn.utils.clip_grad_norm_(
+            model.parameters(),
+            max_norm=grad_clip
+        )
 
         optimizer.step()
 
         running_loss += loss.item()
-        _, predicted  = torch.max(outputs, 1)
+
+        _, predicted = torch.max(outputs, 1)
+
         y_true_train.extend(labels.cpu().numpy())
         y_pred_train.extend(predicted.cpu().numpy())
 
     train_loss     = running_loss / len(train_loader)
     train_accuracy = accuracy_score(y_true_train, y_pred_train) * 100
+
     train_losses.append(train_loss)
     train_accuracies.append(train_accuracy)
 
@@ -1083,23 +1200,32 @@ for epoch in range(epochs):
     with torch.no_grad():
         for inputs, labels in val_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-            outputs  = model(inputs)
-            loss     = criterion(outputs, labels)
+
+            outputs = model(inputs)
+            loss    = criterion(outputs, labels)
+
             val_running_loss += loss.item()
+
             _, predicted = torch.max(outputs, 1)
+
             y_true_val.extend(labels.cpu().numpy())
             y_pred_val.extend(predicted.cpu().numpy())
 
     val_loss     = val_running_loss / len(val_loader)
     val_accuracy = accuracy_score(y_true_val, y_pred_val) * 100
+
     val_losses.append(val_loss)
     val_accuracies.append(val_accuracy)
 
     scheduler.step()
 
-    print(f"Epoch {epoch+1}/{epochs}  |  Train Loss: {train_loss:.4f}  Train Acc: {train_accuracy:.2f}%  |  Val Loss: {val_loss:.4f}  Val Acc: {val_accuracy:.2f}%")
-
-
+    print(
+        f"Epoch {epoch+1}/{epochs}  |  "
+        f"Train Loss: {train_loss:.4f}  "
+        f"Train Acc: {train_accuracy:.2f}%  |  "
+        f"Val Loss: {val_loss:.4f}  "
+        f"Val Acc: {val_accuracy:.2f}%"
+    )
 
 
 
@@ -1113,11 +1239,14 @@ y_pred_val  = []
 y_proba_val = []
 
 with torch.no_grad():
-    for inputs, labels in val_loader:                         # val_loader, not test_loader
+    for inputs, labels in val_loader:
         inputs, labels = inputs.to(device), labels.to(device)
-        outputs      = model(inputs)
-        proba        = torch.softmax(outputs, dim=1)           # probabilities for ROC
+
+        outputs = model(inputs)
+        proba   = torch.softmax(outputs, dim=1)
+
         _, predicted = torch.max(outputs, 1)
+
         y_true_val.extend(labels.cpu().numpy())
         y_pred_val.extend(predicted.cpu().numpy())
         y_proba_val.extend(proba.cpu().numpy())
@@ -1125,6 +1254,8 @@ with torch.no_grad():
 y_true_val  = np.array(y_true_val)
 y_pred_val  = np.array(y_pred_val)
 y_proba_val = np.array(y_proba_val)
+
+
 
 
 # Val classification metrics
@@ -1139,18 +1270,27 @@ print(f"Val Precision: {prec_val * 100:.2f}%")
 print(f"Val Recall:    {rec_val  * 100:.2f}%")
 
 
+
+
 # Val confusion matrix
 cm_val = confusion_matrix(y_true_val, y_pred_val)
 
 plt.figure(figsize=(8, 6))
-sns.heatmap(cm_val, annot=True, fmt="d", cmap="Blues",
-            xticklabels=["AD", "FTD", "HC"],
-            yticklabels=["AD", "FTD", "HC"])
+sns.heatmap(
+    cm_val,
+    annot=True,
+    fmt="d",
+    cmap="Blues",
+    xticklabels=["AD", "FTD", "HC"],
+    yticklabels=["AD", "FTD", "HC"]
+)
 plt.xlabel("Predicted label")
 plt.ylabel("True label")
 plt.title("Confusion Matrix - Validation")
 plt.tight_layout()
 plt.show()
+
+
 
 
 # Training and validation loss / accuracy curves
@@ -1176,15 +1316,23 @@ plt.tight_layout()
 plt.show()
 
 
-# Val ROC curves (one-vs-rest)
+
+
+# Val ROC curves — one-vs-rest
 class_names_roc = ["AD (A)", "FTD (F)", "HC (C)"]
 y_true_val_bin  = label_binarize(y_true_val, classes=[0, 1, 2])
 
 plt.figure(figsize=(8, 6))
+
 for i in range(3):
     fpr, tpr, _ = roc_curve(y_true_val_bin[:, i], y_proba_val[:, i])
     auc_score   = auc(fpr, tpr)
-    plt.plot(fpr, tpr, label=f"{class_names_roc[i]}  AUC = {auc_score:.3f}")
+
+    plt.plot(
+        fpr,
+        tpr,
+        label=f"{class_names_roc[i]}  AUC = {auc_score:.3f}"
+    )
 
 plt.plot([0, 1], [0, 1], "k--", label="Random")
 plt.xlabel("False Positive Rate")
@@ -1193,6 +1341,7 @@ plt.title("ROC Curves (One-vs-Rest) - Validation")
 plt.legend(loc="lower right")
 plt.tight_layout()
 plt.show()
+
 
 
 
