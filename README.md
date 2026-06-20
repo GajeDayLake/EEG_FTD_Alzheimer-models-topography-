@@ -5,7 +5,7 @@ Classification of Alzheimer's , Frontotemporal Dementia and healthy controls by 
 <br>
 
 
-04/2026
+06/2026
 
 <br><br> 
 
@@ -84,7 +84,7 @@ We write “notebook-style” `.py` scripts to conduct model experimentations ea
 
 ## 2) Codes 
 
-**eeg_ftd_alzheimer_1.py** : Loads 88-subject EEG recordings, explores the signals by time & frequency plots, segments them into 60-second epochs with stratified subject-wise splits, computes CWT scalograms per channel as feature extraction, and trains an EfficientNet-B0 classifier with early stopping and other hyperparameters. <br> <br>  
+**eeg_ftd_alzheimer_1.py** : Loads 88-subject EEG recordings, explores the signals by time & frequency plots, segments them into 20-second epochs with stratified subject-wise splits, computes CWT scalograms per channel as feature extraction, and trains a CNN-based classifier. <br> <br>  
 
 ```
 #%% 1) Imports
@@ -93,7 +93,7 @@ We write “notebook-style” `.py` scripts to conduct model experimentations ea
 #%% 4) Frequency analyses for one channel (FFT, Periodogram, Spectrogram, Scalogram)
 #%% 5) Dataset preparation: Splitting and segmentation
 #%% 6) Data transformation for feature extraction: CWT scalograms
-#%% 7) EfficientNet-B0: Training and evaluation
+#%% 7) Model training and evaluation
 #%% 8) Final test evaluation
 #%% Optional 1: Export segment IDs/labels to Excel for manual inspection
 #%% Optional 2: Save / load scalograms from disk
@@ -106,10 +106,10 @@ We write “notebook-style” `.py` scripts to conduct model experimentations ea
 
 | **Feature Extraction** | **Shape of the Instances** | **Data Split** | **Model** | **Hyperparameters** | **Accuracy** | **F1** | **Precision** | **Recall** | **10-Fold CV** |
 |---|---|---|---|---|---|---|---|---|---|
-| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | Custom CNN (AlexNet variant, EEGCNN) | Dropout= 0.2, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.0005, Activation= SiLU, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.01) | **Test= %63.95** (seg) / **%72.22** (subj), Train= %100.00 | **Test= %62.06** (seg) / **%67.04** (subj), Train= ~%100 | **Test= %61.81** (seg) / **%79.17** (subj), Train= ~%100 | **Test= %63.95** (seg) / **%72.22** (subj), Train= ~%100 | ... |
+| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | Custom CNN (AlexNet variant) | Dropout= 0.2, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.0005, Activation= SiLU, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.01) | **Test= %63.95** (seg) / **%72.22** (subj), Train= %100.00 | **Test= %62.06** (seg) / **%67.04** (subj), Train= ~%100 | **Test= %61.81** (seg) / **%79.17** (subj), Train= ~%100 | **Test= %63.95** (seg) / **%72.22** (subj), Train= ~%100 | ... |
 | CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | EfficientNet-B0 (torchvision, modified: first conv 3→19 ch, final linear→3 classes) | Dropout= 0.2, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.0005, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.01) | **Test= %59.25** (seg) / **%55.56** (subj), Train= %100.00 | **Test= %58.19** (seg) / **%55.31** (subj), Train= ~%100 | **Test= %58.28** (seg) / **%55.56** (subj), Train= ~%100 | **Test= %59.25** (seg) / **%55.56** (subj), Train= ~%100 | ... |
-| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | Vision Transformer (EEGViT, DeiT-Tiny equivalent: embed_dim=192, heads=6, layers=4, patch=(6×50), 200 patches) | Dropout= 0.4, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.01, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.1) | **Test= %52.90** (seg) / **%61.11** (subj), Train= ~%100.00 | **Test= %50.53** (seg) / **%58.06** (subj), Train= ~%100 | **Test= %52.40** (seg) / **%73.89** (subj), Train= ~%100 | **Test= %52.90** (seg) / **%61.11** (subj), Train= ~%100 | ... |
-| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | Custom ResNet50 (EEGResNet50: stem conv 19→64, stages [3,4,6,3] BottleneckEEG, AdaptiveAvgPool, classifier 2048→512→3, SiLU) | Dropout= 0.2, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.001, Activation= SiLU, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.05) | **Test= %58.15** (seg) / **%61.11** (subj), Train= %100.00 | **Test= %56.65** (seg) / **%59.03** (subj), Train= ~%100 | **Test= %55.71** (seg) / **%58.64** (subj), Train= ~%100 | **Test= %58.15** (seg) / **%61.11** (subj), Train= ~%100 | ... |
+| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | Vision Transformer (DeiT-Tiny equivalent: embed_dim=192, heads=6, layers=4, patch=(6×50), 200 patches) | Dropout= 0.4, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.01, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.1) | **Test= %52.90** (seg) / **%61.11** (subj), Train= ~%100.00 | **Test= %50.53** (seg) / **%58.06** (subj), Train= ~%100 | **Test= %52.40** (seg) / **%73.89** (subj), Train= ~%100 | **Test= %52.90** (seg) / **%61.11** (subj), Train= ~%100 | ... |
+| CWT (cmor-1.0-1.0, 60 scales) | Tensor (19, 60, 1000) — 19-channel scalogram matrices | 20 sec splits, %70 train, %10 val, %20 test | ResNet50 variant (stem conv 19→64, stages [3,4,6,3] BottleneckEEG, AdaptiveAvgPool, classifier 2048→512→3, SiLU) | Dropout= 0.2, LR schedule= cosine decay (T_max=200), No early stopping, Epochs= 200, Batch= 8, Learning rate= 0.0001, Weight decay= 0.001, Activation= SiLU, Optimizer= AdamW, Loss= Weighted Cross Entropy (label smoothing=0.05) | **Test= %58.15** (seg) / **%61.11** (subj), Train= %100.00 | **Test= %56.65** (seg) / **%59.03** (subj), Train= ~%100 | **Test= %55.71** (seg) / **%58.64** (subj), Train= ~%100 | **Test= %58.15** (seg) / **%61.11** (subj), Train= ~%100 | ... |
 | CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | ResNet18 (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
 | CWT | Tensor with 19-channel Matrices (Scalogram Images) | 1 min splits, %72 train, %8 val, %20 test | DenseNet (modified) | Dropout= 0.02, LR schedule= cosine decay, Early stopping patience= 60, Epochs= 150, Batch= 8, Learning rate =0.001, Activation Functions=SiLU, Optimizer=AdamW(momentum=0.9), Loss=Cross Entropy | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
 | DWT, Db19, 5 Level Decomposition | Feature Vectors, Features= Normalized Integral, Normalized Band Energy, Spectral Centroid, Median Frequency, Mean Frequency  | 1 min splits, %72 train, %8 val, %20 test | MLP | ... | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | **Test= %..**, Train= %.. | ... |
