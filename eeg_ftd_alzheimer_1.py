@@ -935,10 +935,9 @@ print(f"Device: {device}")
 lr           = 0.0001
 batch_size   = 8
 epochs       = 200
-dropout      = 0.4
-weight_decay = 0.01
-# momentum
-# label_smoothing
+dropout      = 0.2
+weight_decay = 0.001
+label_smooth = 0.05
 
 
 
@@ -961,103 +960,257 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-#----Model definition: Vision Transformer (ViT) for 19-channel EEG scalograms
-# Input:  [B, 19, 60, 1000]
-# Output: [B, num_classes]
-#
-# Patch strategy: (6, 50) -> 10 x 20 = 200 patches per sample
-# Each patch covers all 19 channels over 6 frequency bins x 50 time steps
-# -> patch_dim = 19 * 6 * 50 = 5700, projected to embed_dim = 192
-#
-# Architecture scale: DeiT-Tiny equivalent
-#   embed_dim=192, num_heads=6, num_layers=6, mlp_ratio=2  (~4.2M parameters)
-# Pre-LayerNorm (norm_first=True) for stable training from scratch.
-# Self-attention discovers cross-channel and long-range time-frequency
-# structure that CNNs with local receptive fields miss.
+#----Model definition: ResNet50 model for 19-channel scalograms
 
 
-class EEGViT(nn.Module):
+
+class BottleneckEEG(nn.Module):
+    expansion = 4
+
     def __init__(
         self,
-        img_channels = 19,
-        freq_bins    = 60,
-        time_steps   = 1000,
-        patch_h      = 6,
-        patch_w      = 50,
-        embed_dim    = 192,
-        num_heads    = 6,
-        num_layers   = 4,
-        mlp_ratio    = 2,
-        dropout      = dropout,
-        num_classes  = 3,
+        in_channels,
+        mid_channels,
+        stride=(1, 1),
+        downsample=None,
+        dropout=0.0,
     ):
-        super().__init__()
+        super(BottleneckEEG, self).__init__()
 
-        assert freq_bins % patch_h == 0 and time_steps % patch_w == 0, \
-            "freq_bins and time_steps must be divisible by patch_h and patch_w"
+        out_channels = mid_channels * self.expansion
 
-        n_patches = (freq_bins // patch_h) * (time_steps // patch_w)  # 10 * 20 = 200
-        patch_dim = img_channels * patch_h * patch_w                   # 19 * 6 * 50 = 5700
-
-        # Patch embedding: flatten each patch -> embed_dim
-        self.patch_embed = nn.Linear(patch_dim, embed_dim)
-
-        # Learnable CLS token and positional embedding
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, n_patches + 1, embed_dim))
-        self.pos_drop  = nn.Dropout(p=dropout)
-
-        # Transformer encoder (Pre-LN, GELU activation)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model         = embed_dim,
-            nhead           = num_heads,
-            dim_feedforward = embed_dim * mlp_ratio,
-            dropout         = dropout,
-            activation      = "gelu",
-            batch_first     = True,
-            norm_first      = True,
+        # 1x1 reduction
+        self.conv1 = nn.Conv2d(
+            in_channels,
+            mid_channels,
+            kernel_size=1,
+            stride=1,
+            bias=False,
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.bn1 = nn.BatchNorm2d(mid_channels)
 
-        # Classification head on CLS token
-        self.norm = nn.LayerNorm(embed_dim)
-        self.head = nn.Linear(embed_dim, num_classes)
+        # 3x3 spatial/time-frequency convolution
+        self.conv2 = nn.Conv2d(
+            mid_channels,
+            mid_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
+        self.bn2 = nn.BatchNorm2d(mid_channels)
 
-        self.patch_h = patch_h
-        self.patch_w = patch_w
+        # 1x1 expansion
+        self.conv3 = nn.Conv2d(
+            mid_channels,
+            out_channels,
+            kernel_size=1,
+            stride=1,
+            bias=False,
+        )
+        self.bn3 = nn.BatchNorm2d(out_channels)
 
-        # Weight initialization
-        nn.init.trunc_normal_(self.cls_token, std=0.02)
-        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        self.act = nn.SiLU()
+        self.downsample = downsample
+
+        self.dropout = nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x):
-        B, C, H, W = x.shape  # [B, 19, 60, 1000]
-        ph, pw = self.patch_h, self.patch_w
+        identity = x
 
-        # Patchify: [B, C, H, W] -> [B, n_patches, patch_dim]
-        x = x.reshape(B, C, H // ph, ph, W // pw, pw)  # [B, C, nh, ph, nw, pw]
-        x = x.permute(0, 2, 4, 1, 3, 5)                # [B, nh, nw, C, ph, pw]
-        x = x.reshape(B, (H // ph) * (W // pw), C * ph * pw)  # [B, 200, 5700]
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.act(out)
 
-        # Linear projection to embed_dim
-        x = self.patch_embed(x)  # [B, 200, 192]
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.act(out)
 
-        # Prepend CLS token and add positional embedding
-        cls = self.cls_token.expand(B, -1, -1)
-        x   = torch.cat([cls, x], dim=1)   # [B, 201, 192]
-        x   = self.pos_drop(x + self.pos_embed)
+        out = self.dropout(out)
 
-        # Transformer encoder
-        x = self.transformer(x)  # [B, 201, 192]
+        out = self.conv3(out)
+        out = self.bn3(out)
 
-        # CLS token -> classifier
-        x = self.norm(x[:, 0])   # [B, 192]
-        return self.head(x)      # [B, num_classes]
+        if self.downsample is not None:
+            identity = self.downsample(x)
 
+        out = out + identity
+        out = self.act(out)
 
+        return out
 
 
-model = EEGViT().to(device)
+class EEGResNet50(nn.Module):
+    def __init__(self, num_classes=3, dropout=0.25):
+        super(EEGResNet50, self).__init__()
+
+        self.in_channels = 64
+
+        
+        # Stem
+        # Input: [B, 19, 60, 1000]
+        
+        # Standard ResNet uses kernel=7, stride=2 on both axes.
+        # Here we preserve the scale axis and downsample only time.
+        
+        # [B, 19, 60, 1000] -> [B, 64, 60, 500]
+        self.conv1 = nn.Conv2d(
+            in_channels=19,
+            out_channels=64,
+            kernel_size=(7, 7),
+            stride=(1, 2),
+            padding=(3, 3),
+            bias=False,
+        )
+        self.bn1 = nn.BatchNorm2d(64)
+        self.act = nn.SiLU()
+
+        # Reduce time axis only:
+        # [B, 64, 60, 500] -> [B, 64, 60, 250]
+        self.maxpool = nn.MaxPool2d(
+            kernel_size=(1, 3),
+            stride=(1, 2),
+            padding=(0, 1),
+        )
+
+        
+        # ResNet50 stages: [3, 4, 6, 3]
+        
+        # Layer1:
+        # [B, 64, 60, 250] -> [B, 256, 60, 250]
+        self.layer1 = self._make_layer(
+            mid_channels=64,
+            blocks=3,
+            stride=(1, 1),
+            dropout=dropout,
+        )
+
+        # Layer2:
+        # [B, 256, 60, 250] -> [B, 512, 30, 125]
+        self.layer2 = self._make_layer(
+            mid_channels=128,
+            blocks=4,
+            stride=(2, 2),
+            dropout=dropout,
+        )
+
+        # Layer3:
+        # [B, 512, 30, 125] -> [B, 1024, 15, 63]
+        self.layer3 = self._make_layer(
+            mid_channels=256,
+            blocks=6,
+            stride=(2, 2),
+            dropout=dropout,
+        )
+
+        # Layer4:
+        # [B, 1024, 15, 63] -> [B, 2048, 8, 32]
+        self.layer4 = self._make_layer(
+            mid_channels=512,
+            blocks=3,
+            stride=(2, 2),
+            dropout=dropout,
+        )
+
+        # Global pooling:
+        # [B, 2048, 8, 32] -> [B, 2048, 1, 1]
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Classifier:
+        # [B, 2048] -> [B, 3]
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512 * BottleneckEEG.expansion, 512),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(512, num_classes),
+        )
+
+        self._initialize_weights()
+
+    def _make_layer(self, mid_channels, blocks, stride=(1, 1), dropout=0.0):
+        downsample = None
+        out_channels = mid_channels * BottleneckEEG.expansion
+
+        if stride != (1, 1) or self.in_channels != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(
+                    self.in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                nn.BatchNorm2d(out_channels),
+            )
+
+        layers = []
+
+        layers.append(
+            BottleneckEEG(
+                in_channels=self.in_channels,
+                mid_channels=mid_channels,
+                stride=stride,
+                downsample=downsample,
+                dropout=dropout,
+            )
+        )
+
+        self.in_channels = out_channels
+
+        for _ in range(1, blocks):
+            layers.append(
+                BottleneckEEG(
+                    in_channels=self.in_channels,
+                    mid_channels=mid_channels,
+                    stride=(1, 1),
+                    downsample=None,
+                    dropout=dropout,
+                )
+            )
+
+        return nn.Sequential(*layers)
+
+    def _initialize_weights(self):
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_out",
+                    nonlinearity="relu",
+                )
+
+            elif isinstance(module, nn.BatchNorm2d):
+                nn.init.constant_(module.weight, 1)
+                nn.init.constant_(module.bias, 0)
+
+            elif isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                nn.init.constant_(module.bias, 0)
+
+    def forward(self, x):
+        # Input: [B, 19, 60, 1000]
+
+        x = self.conv1(x)      # [B, 64, 60, 500]
+        x = self.bn1(x)
+        x = self.act(x)
+
+        x = self.maxpool(x)    # [B, 64, 60, 250]
+
+        x = self.layer1(x)     # [B, 256, 60, 250]
+        x = self.layer2(x)     # [B, 512, 30, 125]
+        x = self.layer3(x)     # [B, 1024, 15, 63]
+        x = self.layer4(x)     # [B, 2048, 8, 32]
+
+        x = self.avgpool(x)    # [B, 2048, 1, 1]
+        x = self.classifier(x) # [B, 3]
+
+        return x
+ 
+
+
+model = EEGResNet50(num_classes=3, dropout=dropout).to(device)
 
 
 
@@ -1071,7 +1224,7 @@ class_weights = torch.tensor(class_weights, dtype=torch.float32).to(device)
 print("Class counts:", class_counts)
 print("Class weights:", class_weights.detach().cpu().numpy())
 
-criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing= label_smooth)
 
 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
@@ -1425,7 +1578,7 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
  
 
 quick_model_health_check(
-    EEGViT,
+    EEGResNet50,
     model_kwargs={"dropout": 0.0, "num_classes": 3},
     tiny_n=16,
     lr_diag=1e-4
