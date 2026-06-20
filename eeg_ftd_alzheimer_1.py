@@ -934,9 +934,9 @@ print(f"Device: {device}")
 # ----Hyperparameters
 lr           = 0.0001
 batch_size   = 8
-epochs       = 200
-dropout      = 0.2
-weight_decay = 0.001
+epochs       = 120
+dropout      = 0.15
+weight_decay = 0.0005
 label_smooth = 0.05
 
 
@@ -960,217 +960,253 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 
 
-#----Model definition: ResNet50 model for 19-channel scalograms
+#----Model definition: Custom DenseNet for 19-channel EEG scalograms
 
 
+class DenseLayerEEG(nn.Module):
+    def __init__(self, in_channels, growth_rate, bottleneck_factor=4, groups=8):
+        super(DenseLayerEEG, self).__init__()
 
-class BottleneckEEG(nn.Module):
-    expansion = 4
+        inter_channels = bottleneck_factor * growth_rate
 
-    def __init__(
-        self,
-        in_channels,
-        mid_channels,
-        stride=(1, 1),
-        downsample=None,
-        dropout=0.0,
-    ):
-        super(BottleneckEEG, self).__init__()
+        self.norm1 = nn.GroupNorm(
+            num_groups=min(groups, in_channels),
+            num_channels=in_channels
+        )
+        self.act1 = nn.SiLU()
 
-        out_channels = mid_channels * self.expansion
-
-        # 1x1 reduction
         self.conv1 = nn.Conv2d(
-            in_channels,
-            mid_channels,
+            in_channels=in_channels,
+            out_channels=inter_channels,
             kernel_size=1,
             stride=1,
-            bias=False,
+            padding=0,
+            bias=False
         )
-        self.bn1 = nn.BatchNorm2d(mid_channels)
 
-        # 3x3 spatial/time-frequency convolution
+        self.norm2 = nn.GroupNorm(
+            num_groups=min(groups, inter_channels),
+            num_channels=inter_channels
+        )
+        self.act2 = nn.SiLU()
+
         self.conv2 = nn.Conv2d(
-            mid_channels,
-            mid_channels,
+            in_channels=inter_channels,
+            out_channels=growth_rate,
             kernel_size=3,
-            stride=stride,
-            padding=1,
-            bias=False,
-        )
-        self.bn2 = nn.BatchNorm2d(mid_channels)
-
-        # 1x1 expansion
-        self.conv3 = nn.Conv2d(
-            mid_channels,
-            out_channels,
-            kernel_size=1,
             stride=1,
-            bias=False,
+            padding=1,
+            bias=False
         )
-        self.bn3 = nn.BatchNorm2d(out_channels)
-
-        self.act = nn.SiLU()
-        self.downsample = downsample
-
-        self.dropout = nn.Dropout2d(p=dropout) if dropout > 0 else nn.Identity()
 
     def forward(self, x):
-        identity = x
+        out = self.norm1(x)
+        out = self.act1(out)
+        out = self.conv1(out)
 
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.act(out)
-
+        out = self.norm2(out)
+        out = self.act2(out)
         out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.act(out)
 
-        out = self.dropout(out)
-
-        out = self.conv3(out)
-        out = self.bn3(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out = out + identity
-        out = self.act(out)
+        # DenseNet feature reuse
+        out = torch.cat([x, out], dim=1)
 
         return out
 
 
-class EEGResNet50(nn.Module):
-    def __init__(self, num_classes=3, dropout=0.25):
-        super(EEGResNet50, self).__init__()
+class DenseBlockEEG(nn.Module):
+    def __init__(self, in_channels, num_layers, growth_rate):
+        super(DenseBlockEEG, self).__init__()
 
-        self.in_channels = 64
+        layers = []
+        current_channels = in_channels
 
-        
-        # Stem
-        # Input: [B, 19, 60, 1000]
-        
-        # Standard ResNet uses kernel=7, stride=2 on both axes.
-        # Here we preserve the scale axis and downsample only time.
-        
-        # [B, 19, 60, 1000] -> [B, 64, 60, 500]
-        self.conv1 = nn.Conv2d(
-            in_channels=19,
-            out_channels=64,
-            kernel_size=(7, 7),
-            stride=(1, 2),
-            padding=(3, 3),
-            bias=False,
+        for _ in range(num_layers):
+            layers.append(
+                DenseLayerEEG(
+                    in_channels=current_channels,
+                    growth_rate=growth_rate,
+                    bottleneck_factor=4,
+                    groups=8
+                )
+            )
+            current_channels += growth_rate
+
+        self.block = nn.Sequential(*layers)
+        self.out_channels = current_channels
+
+    def forward(self, x):
+        return self.block(x)
+
+
+class TransitionEEG(nn.Module):
+    def __init__(self, in_channels, out_channels, pool_kernel, pool_stride):
+        super(TransitionEEG, self).__init__()
+
+        self.norm = nn.GroupNorm(
+            num_groups=min(8, in_channels),
+            num_channels=in_channels
         )
-        self.bn1 = nn.BatchNorm2d(64)
         self.act = nn.SiLU()
 
-        # Reduce time axis only:
-        # [B, 64, 60, 500] -> [B, 64, 60, 250]
-        self.maxpool = nn.MaxPool2d(
-            kernel_size=(1, 3),
-            stride=(1, 2),
-            padding=(0, 1),
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=False
+        )
+
+        self.pool = nn.AvgPool2d(
+            kernel_size=pool_kernel,
+            stride=pool_stride
+        )
+
+    def forward(self, x):
+        x = self.norm(x)
+        x = self.act(x)
+        x = self.conv(x)
+        x = self.pool(x)
+
+        return x
+
+
+class EEGDenseNet(nn.Module):
+    def __init__(self, num_classes=3, growth_rate=24, dropout=0.2):
+        super(EEGDenseNet, self).__init__()
+
+        
+        # Input: [B, 19, 60, 1000]
+        
+        # Stem:
+        # Preserve scale axis, reduce time axis.
+        
+        # [B, 19, 60, 1000] -> [B, 64, 60, 500]
+        self.stem = nn.Sequential(
+            nn.Conv2d(
+                in_channels=19,
+                out_channels=64,
+                kernel_size=(7, 7),
+                stride=(1, 2),
+                padding=(3, 3),
+                bias=False
+            ),
+            nn.GroupNorm(num_groups=8, num_channels=64),
+            nn.SiLU(),
+
+            # Extra local refinement without downsampling
+            # [B, 64, 60, 500] -> [B, 64, 60, 500]
+            nn.Conv2d(
+                in_channels=64,
+                out_channels=64,
+                kernel_size=(3, 3),
+                stride=(1, 1),
+                padding=(1, 1),
+                bias=False
+            ),
+            nn.GroupNorm(num_groups=8, num_channels=64),
+            nn.SiLU()
         )
 
         
-        # ResNet50 stages: [3, 4, 6, 3]
+        # Dense Block 1
         
-        # Layer1:
-        # [B, 64, 60, 250] -> [B, 256, 60, 250]
-        self.layer1 = self._make_layer(
-            mid_channels=64,
-            blocks=3,
-            stride=(1, 1),
-            dropout=dropout,
+        # [B, 64, 60, 500] -> [B, 160, 60, 500]
+        self.block1 = DenseBlockEEG(
+            in_channels=64,
+            num_layers=4,
+            growth_rate=growth_rate
         )
 
-        # Layer2:
-        # [B, 256, 60, 250] -> [B, 512, 30, 125]
-        self.layer2 = self._make_layer(
-            mid_channels=128,
-            blocks=4,
-            stride=(2, 2),
-            dropout=dropout,
+        # Transition 1:
+        # [B, 160, 60, 500] -> [B, 96, 60, 250]
+        self.trans1 = TransitionEEG(
+            in_channels=64 + 4 * growth_rate,
+            out_channels=96,
+            pool_kernel=(1, 2),
+            pool_stride=(1, 2)
         )
 
-        # Layer3:
-        # [B, 512, 30, 125] -> [B, 1024, 15, 63]
-        self.layer3 = self._make_layer(
-            mid_channels=256,
-            blocks=6,
-            stride=(2, 2),
-            dropout=dropout,
+        
+        # Dense Block 2
+        
+        # [B, 96, 60, 250] -> [B, 240, 60, 250]
+        self.block2 = DenseBlockEEG(
+            in_channels=96,
+            num_layers=6,
+            growth_rate=growth_rate
         )
 
-        # Layer4:
-        # [B, 1024, 15, 63] -> [B, 2048, 8, 32]
-        self.layer4 = self._make_layer(
-            mid_channels=512,
-            blocks=3,
-            stride=(2, 2),
-            dropout=dropout,
+        # Transition 2:
+        # [B, 240, 60, 250] -> [B, 144, 30, 125]
+        self.trans2 = TransitionEEG(
+            in_channels=96 + 6 * growth_rate,
+            out_channels=144,
+            pool_kernel=(2, 2),
+            pool_stride=(2, 2)
         )
 
-        # Global pooling:
-        # [B, 2048, 8, 32] -> [B, 2048, 1, 1]
+        
+        # Dense Block 3
+        
+        # [B, 144, 30, 125] -> [B, 336, 30, 125]
+        self.block3 = DenseBlockEEG(
+            in_channels=144,
+            num_layers=8,
+            growth_rate=growth_rate
+        )
+
+        # Transition 3:
+        # [B, 336, 30, 125] -> [B, 192, 15, 62]
+        self.trans3 = TransitionEEG(
+            in_channels=144 + 8 * growth_rate,
+            out_channels=192,
+            pool_kernel=(2, 2),
+            pool_stride=(2, 2)
+        )
+
+        
+        # Dense Block 4
+        
+        # [B, 192, 15, 62] -> [B, 336, 15, 62]
+        self.block4 = DenseBlockEEG(
+            in_channels=192,
+            num_layers=6,
+            growth_rate=growth_rate
+        )
+
+        final_channels = 192 + 6 * growth_rate  # 336 when growth_rate=24
+
+        self.final_norm = nn.GroupNorm(
+            num_groups=min(8, final_channels),
+            num_channels=final_channels
+        )
+        self.final_act = nn.SiLU()
+
+        # Both average and max pooling are used.
+        # AvgPool captures global structure.
+        # MaxPool captures strong localized time-frequency activations.
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.maxpool = nn.AdaptiveMaxPool2d((1, 1))
 
-        # Classifier:
-        # [B, 2048] -> [B, 3]
+        # Classifier input:
+        # avg pooled 336 + max pooled 336 = 672
+        classifier_in = final_channels * 2
+
         self.classifier = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(p=dropout),
-            nn.Linear(512 * BottleneckEEG.expansion, 512),
+            nn.Linear(classifier_in, 512),
             nn.SiLU(),
             nn.Dropout(p=dropout),
-            nn.Linear(512, num_classes),
+            nn.Linear(512, 128),
+            nn.SiLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(128, num_classes)
         )
 
         self._initialize_weights()
-
-    def _make_layer(self, mid_channels, blocks, stride=(1, 1), dropout=0.0):
-        downsample = None
-        out_channels = mid_channels * BottleneckEEG.expansion
-
-        if stride != (1, 1) or self.in_channels != out_channels:
-            downsample = nn.Sequential(
-                nn.Conv2d(
-                    self.in_channels,
-                    out_channels,
-                    kernel_size=1,
-                    stride=stride,
-                    bias=False,
-                ),
-                nn.BatchNorm2d(out_channels),
-            )
-
-        layers = []
-
-        layers.append(
-            BottleneckEEG(
-                in_channels=self.in_channels,
-                mid_channels=mid_channels,
-                stride=stride,
-                downsample=downsample,
-                dropout=dropout,
-            )
-        )
-
-        self.in_channels = out_channels
-
-        for _ in range(1, blocks):
-            layers.append(
-                BottleneckEEG(
-                    in_channels=self.in_channels,
-                    mid_channels=mid_channels,
-                    stride=(1, 1),
-                    downsample=None,
-                    dropout=dropout,
-                )
-            )
-
-        return nn.Sequential(*layers)
 
     def _initialize_weights(self):
         for module in self.modules():
@@ -1178,39 +1214,53 @@ class EEGResNet50(nn.Module):
                 nn.init.kaiming_normal_(
                     module.weight,
                     mode="fan_out",
-                    nonlinearity="relu",
+                    nonlinearity="relu"
                 )
 
-            elif isinstance(module, nn.BatchNorm2d):
+            elif isinstance(module, nn.GroupNorm):
                 nn.init.constant_(module.weight, 1)
                 nn.init.constant_(module.bias, 0)
 
             elif isinstance(module, nn.Linear):
-                nn.init.normal_(module.weight, mean=0.0, std=0.01)
+                nn.init.kaiming_normal_(
+                    module.weight,
+                    mode="fan_in",
+                    nonlinearity="relu"
+                )
                 nn.init.constant_(module.bias, 0)
 
     def forward(self, x):
         # Input: [B, 19, 60, 1000]
 
-        x = self.conv1(x)      # [B, 64, 60, 500]
-        x = self.bn1(x)
-        x = self.act(x)
+        x = self.stem(x)       # [B, 64, 60, 500]
 
-        x = self.maxpool(x)    # [B, 64, 60, 250]
+        x = self.block1(x)     # [B, 160, 60, 500]
+        x = self.trans1(x)     # [B, 96, 60, 250]
 
-        x = self.layer1(x)     # [B, 256, 60, 250]
-        x = self.layer2(x)     # [B, 512, 30, 125]
-        x = self.layer3(x)     # [B, 1024, 15, 63]
-        x = self.layer4(x)     # [B, 2048, 8, 32]
+        x = self.block2(x)     # [B, 240, 60, 250]
+        x = self.trans2(x)     # [B, 144, 30, 125]
 
-        x = self.avgpool(x)    # [B, 2048, 1, 1]
-        x = self.classifier(x) # [B, 3]
+        x = self.block3(x)     # [B, 336, 30, 125]
+        x = self.trans3(x)     # [B, 192, 15, 62]
+
+        x = self.block4(x)     # [B, 336, 15, 62]
+
+        x = self.final_norm(x)
+        x = self.final_act(x)
+
+        avg_features = self.avgpool(x)   # [B, 336, 1, 1]
+        max_features = self.maxpool(x)   # [B, 336, 1, 1]
+
+        x = torch.cat([avg_features, max_features], dim=1)  # [B, 672, 1, 1]
+
+        x = self.classifier(x)  # [B, 3]
 
         return x
+
  
 
 
-model = EEGResNet50(num_classes=3, dropout=dropout).to(device)
+model = EEGDenseNet(num_classes=3, growth_rate=24, dropout=dropout).to(device)
 
 
 
@@ -1578,7 +1628,7 @@ def quick_model_health_check(ModelClass, model_kwargs=None, tiny_n=16, lr_diag=1
  
 
 quick_model_health_check(
-    EEGResNet50,
+    EEGDenseNet,
     model_kwargs={"dropout": 0.0, "num_classes": 3},
     tiny_n=16,
     lr_diag=1e-4
