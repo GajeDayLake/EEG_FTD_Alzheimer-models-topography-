@@ -935,10 +935,10 @@ print(f"Device: {device}")
 # ----Hyperparameters
 lr           = 0.0001
 batch_size   = 8
-epochs       = 120
-dropout      = 0.15
+epochs       = 150
+dropout      = 0.1
 weight_decay = 0.0001
-label_smooth = 0.05
+label_smooth = 0.02
 
 
 
@@ -963,7 +963,7 @@ test_loader  = DataLoader(TensorDataset(test_tensor,  torch.tensor(test_labels_i
 
 #---- Model definition: YOLO26-cls adapted for 19-channel EEG scalograms
 
-model_weights_cls = "yolo26n-cls.pt"   # swap variant: n/s/m/l/x
+model_weights_cls = "yolo26s-cls.pt"   # swap variant: n/s/m/l/x
 
 
 class YOLO26CLS(nn.Module):
