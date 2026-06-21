@@ -547,7 +547,84 @@ print(classification_report(dl_results["SpectrogramCNN"]["sv_true"],
                             target_names=CLASS_NAMES, zero_division=0))
 
 
-#%% 9) Final results and comparison plots
+#%% 9) EDA — Band-power topography maps (delta / theta / alpha / beta)
+
+from mne.viz import plot_topomap
+
+TOPO_BANDS = {
+    "Delta (0.5–4 Hz)":  (0.5,  4.0),
+    "Theta (4–8 Hz)":    (4.0,  8.0),
+    "Alpha (8–13 Hz)":   (8.0, 13.0),
+    "Beta (13–30 Hz)":  (13.0, 30.0),
+}
+GROUP_LABELS = {"A": "Alzheimer's Disease", "F": "Frontotemporal Dementia", "C": "Healthy Control"}
+
+def subject_band_powers(data_dir):
+    """Load each subject's EEG and compute mean Welch PSD per band per channel."""
+    import glob
+    group_powers = {"A": [], "F": [], "C": []}
+    mne_info = None
+
+    for _, row in participants.iterrows():
+        sub_id = row["participant_id"]
+        group  = row["Group"].strip().upper()[0]
+        path   = (data_dir / "derivatives" / sub_id / "eeg"
+                  / f"{sub_id}_task-eyesclosed_eeg.set")
+        if not path.exists():
+            continue
+
+        try:
+            raw = mne.io.read_raw_eeglab(str(path), preload=True, verbose=False)
+            avail = [ch for ch in CH_NAMES if ch in raw.ch_names]
+            raw.pick_channels(avail, ordered=True)
+            raw.set_channel_types({ch: "eeg" for ch in avail})
+            raw.set_montage("standard_1020", on_missing="warn")
+        except Exception as e:
+            print(f"  [skip] {sub_id}: {e}"); continue
+
+        if mne_info is None:
+            mne_info = raw.info
+
+        sub_bp = []
+        for flo, fhi in TOPO_BANDS.values():
+            psds, _ = raw.compute_psd(method="welch", fmin=flo, fmax=fhi,
+                                      n_fft=2048, verbose=False).get_data(return_freqs=True)
+            sub_bp.append(np.mean(psds * 1e12, axis=1))   # µV²/Hz → mean per channel
+        group_powers[group].append(np.stack(sub_bp, axis=1))   # (n_ch, n_bands)
+
+    for g in group_powers:
+        group_powers[g] = np.stack(group_powers[g], axis=0) if group_powers[g] else None
+    return group_powers, mne_info
+
+print("Computing band-power topomaps...")
+gp, mne_info = subject_band_powers(DATASET_DIR)
+
+band_names = list(TOPO_BANDS.keys())
+for b_idx, band_name in enumerate(band_names):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    fig.suptitle(f"Mean Band Power Topography — {band_name}", fontsize=14, fontweight="bold")
+
+    all_data   = np.concatenate([gp[g][:, :, b_idx] for g in ["A","F","C"] if gp[g] is not None])
+    grand_mean = all_data.mean()
+    norm_vals  = [gp[g][:, :, b_idx].mean(axis=0) / grand_mean for g in ["A","F","C"] if gp[g] is not None]
+    max_dev    = max(abs(v - 1.0).max() for v in norm_vals)
+    vmin, vmax = 1.0 - max_dev, 1.0 + max_dev
+
+    for ax, g in zip(axes, ["A","F","C"]):
+        mean_power = gp[g][:, :, b_idx].mean(axis=0) / grand_mean
+        im, _ = plot_topomap(mean_power, mne_info, axes=ax, vlim=(vmin, vmax),
+                             cmap="RdBu_r", show=False)
+        ax.set_title(f"{GROUP_LABELS[g]}\n(n={gp[g].shape[0]})", fontsize=10)
+
+    plt.colorbar(im, ax=axes.tolist(), shrink=0.6, label="Relative Power (grand-mean normalized)")
+    out = OUTPUT_DIR / f"topomap_{band_name.split()[0].lower()}.png"
+    plt.savefig(out, dpi=150, bbox_inches="tight"); plt.close()
+    print(f"  Saved: {out}")
+
+print("Topomaps done.\n")
+
+
+#%% 10) Final results and comparison plots
 
 # Save confusion matrices
 for name, res in {**ml_results, **dl_results}.items():
